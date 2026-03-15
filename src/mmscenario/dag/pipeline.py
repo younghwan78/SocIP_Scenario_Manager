@@ -136,9 +136,18 @@ class ScenarioPipeline:
         for (lvl, layer), node_ids in groups.items():
             base_x = lvl * X_STEP
             base_y = LAYER_Y.get(layer, 300.0)
+            n = len(node_ids)
             for i, node_id in enumerate(node_ids):
-                # Center the group vertically around base_y
-                offset = (i - (len(node_ids) - 1) / 2) * Y_STEP
+                if n == 1 and layer in ("hw", "memory"):
+                    # Single node in this (gen, layer) bucket: alternate y by
+                    # generation parity so adjacent-generation nodes in the
+                    # same layer end up at different y positions.
+                    # e.g. GPU (gen 3, odd) at base+40, ISP (gen 4, even) at base-40
+                    alt = (Y_STEP / 2) * (1 if lvl % 2 else -1)
+                    offset: float = alt
+                else:
+                    # Multiple nodes in same column/layer: spread symmetrically
+                    offset = (i - (n - 1) / 2) * Y_STEP
                 layout[node_id] = {"x": base_x, "y": base_y + offset}
 
         return layout
