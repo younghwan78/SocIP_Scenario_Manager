@@ -83,7 +83,10 @@ class L1Node(BaseModel):
     layer: Literal["app", "framework", "hal", "kernel", "hw", "memory"]
     sw_thread: Optional[Literal["app", "framework", "hal_kernel"]] = None
     comment: Optional[str] = None
-    external: bool = False  # True for components outside SoC boundary (sensor, display, etc.)
+    external: bool = False        # True for components outside SoC boundary (sensor, display, etc.)
+    compression: Optional[bool] = None  # Buffer: AFBC/SBWC compression enabled → badge 'C'
+    llc: Optional[bool] = None          # Buffer: Last Level Cache usage → badge 'L'
+    rotation: Optional[bool] = None     # HW IP (DPU): rotation enabled → badge 'R'
 
 
 class L1Edge(BaseModel):

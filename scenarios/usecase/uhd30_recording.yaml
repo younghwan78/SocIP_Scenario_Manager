@@ -147,26 +147,33 @@ pipeline:
       type: hw_ip
       label: DPU
       layer: hw
-      comment: "Display Processing Unit — HW overlay path. GPU composition is the risk variant."
+      rotation: true
+      comment: "Display Processing Unit — HW overlay path. Rotation enabled (portrait recording). GPU composition is the risk variant."
 
     # ── Memory / Buffer layer ──────────────────────────────────────────────────
     - id: enc_buf
       type: buffer
       label: "Encode Buffer\nNV12 · 3840×2160"
       layer: memory
-      comment: "ISP M2M output DMA-buf — shared between ISP (producer) and MFC (consumer)"
+      compression: false
+      llc: false
+      comment: "ISP M2M output → MFC. No compression (MFC requires raw NV12). No LLC (streaming write, sequential)."
 
     - id: preview_buf
       type: buffer
       label: "Preview Buffer\nNV12 · 1920×1080"
       layer: memory
-      comment: "ISP preview output — shared between ISP (producer) and DPU via SurfaceFlinger"
+      compression: true
+      llc: true
+      comment: "ISP preview output → DPU. AFBC compressed (reduces BW ~40%). LLC enabled (DPU reads repeatedly per scanout)."
 
     - id: bitstream
       type: buffer
       label: "Encoded Bitstream\n(H.265 / AV1)"
       layer: memory
-      comment: "MFC output buffer — picked up by Codec2 HAL and handed to MediaMuxer"
+      compression: false
+      llc: false
+      comment: "MFC output → MediaMuxer file write. Compressed bitstream (codec-level, not memory compression). No LLC (sequential file write)."
 
   edges:
     # ══ SW control stack: camera capture path ════════════════════════════════

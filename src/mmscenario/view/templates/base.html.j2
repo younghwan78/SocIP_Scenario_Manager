@@ -78,6 +78,19 @@
   .risk-medium { background: #fef3cd; border-left: 3px solid #f39c12; }
   .risk-low    { background: #e8f8ee; border-left: 3px solid #27ae60; }
 
+  /* ── Node badges (C / L / R) ── */
+  .node-badge {
+    position: absolute;
+    width: 13px; height: 13px;
+    font-size: 8px; font-weight: 700;
+    line-height: 13px; text-align: center;
+    border-radius: 3px;
+    color: #fff;
+    pointer-events: none;
+    z-index: 20;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.35);
+  }
+
   /* ── Print snapshot ── */
   @media print {
     .toolbar, .tab-bar, .detail-panel, header button { display: none !important; }
@@ -385,6 +398,38 @@ function drawLaneDividers() {
 }
 cy.on('pan zoom', drawLaneDividers);
 
+// ── Node badges: C (compression) / L (LLC) / R (rotation) ────────
+// Rendered as absolutely-positioned HTML overlays on top-left of each node.
+var BADGE_DEFS = [
+  { key: 'compression', text: 'C', color: '#2471a3', title: 'Compression (AFBC / SBWC)' },
+  { key: 'llc',         text: 'L', color: '#117a65', title: 'Last Level Cache (LLC)' },
+  { key: 'rotation',    text: 'R', color: '#922b21', title: 'Rotation enabled' },
+];
+
+function drawNodeBadges() {
+  document.querySelectorAll('.node-badge').forEach(function(el) { el.remove(); });
+  var container = document.getElementById('cy');
+  cy.nodes().forEach(function(node) {
+    var d = node.data();
+    var active = BADGE_DEFS.filter(function(b) { return d[b.key] === true; });
+    if (!active.length) return;
+    var bb = node.renderedBoundingBox({ includeLabels: false });
+    active.forEach(function(badge, i) {
+      var el = document.createElement('div');
+      el.className = 'node-badge';
+      el.textContent = badge.text;
+      el.title = badge.title;
+      el.style.background = badge.color;
+      el.style.left = (bb.x1 + 2 + i * 15) + 'px';
+      el.style.top  = (bb.y1 + 2) + 'px';
+      container.appendChild(el);
+    });
+  });
+}
+
+drawNodeBadges();
+cy.on('pan zoom resize', drawNodeBadges);
+
 // ── Interactions ─────────────────────────────────────────────────
 
 cy.on('tap', 'node', function(evt) {
@@ -457,6 +502,15 @@ function showNodeDetail(data) {
   html += row('Type', data.type);
   html += row('Layer', data.layer);
   if (data.external) html += row('Boundary', '<span style="color:#c0392b;font-weight:600">External (off-SoC)</span>');
+  if (data.compression != null) html += row('Compression', data.compression
+    ? '<span style="color:#2471a3;font-weight:600">&#9646; Enabled (AFBC/SBWC)</span>'
+    : '<span style="color:#888">Disabled</span>');
+  if (data.llc != null) html += row('LLC', data.llc
+    ? '<span style="color:#117a65;font-weight:600">&#9646; Enabled</span>'
+    : '<span style="color:#888">Disabled</span>');
+  if (data.rotation != null) html += row('Rotation', data.rotation
+    ? '<span style="color:#922b21;font-weight:600">&#9646; Enabled</span>'
+    : '<span style="color:#888">Disabled</span>');
   if (data.comment) html += row('Comment', data.comment);
   html += '</table>';
 

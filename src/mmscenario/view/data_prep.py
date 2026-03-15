@@ -47,19 +47,24 @@ def build_cytoscape_elements(
         layer_info = LAYER_STYLE.get(node.layer, {})
         # External SoC components use gray; internal use layer color
         color = EXTERNAL_COLOR if node.external else layer_info.get("color", "#999")
-        elements.append({
-            "data": {
-                "id": node.id,
-                "label": node.label,
-                "type": node.type.value,
-                "layer": node.layer,
-                "color": color,
-                "shape": NODE_TYPE_SHAPE.get(node.type.value, "rectangle"),
-                "comment": node.comment or "",
-                "external": node.external,
-            },
-            "position": pos,
-        })
+        data: dict = {
+            "id": node.id,
+            "label": node.label,
+            "type": node.type.value,
+            "layer": node.layer,
+            "color": color,
+            "shape": NODE_TYPE_SHAPE.get(node.type.value, "rectangle"),
+            "comment": node.comment or "",
+            "external": node.external,
+        }
+        # Badge flags — only include when explicitly set (None = not applicable)
+        if node.compression is not None:
+            data["compression"] = node.compression
+        if node.llc is not None:
+            data["llc"] = node.llc
+        if node.rotation is not None:
+            data["rotation"] = node.rotation
+        elements.append({"data": data, "position": pos})
 
     for edge in pipeline._data.edges:
         label_parts: list[str] = []
