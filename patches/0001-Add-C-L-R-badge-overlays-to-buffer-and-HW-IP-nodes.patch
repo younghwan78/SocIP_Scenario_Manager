@@ -1,0 +1,202 @@
+From 95741bae738f8b32b3a944c29ba2b14123d7fe0b Mon Sep 17 00:00:00 2001
+From: YounghwanJoo <neokein@gmail.com>
+Date: Sun, 15 Mar 2026 23:41:33 +0900
+Subject: [PATCH 1/3] Add C/L/R badge overlays to buffer and HW IP nodes
+
+Buffer nodes now carry compression and llc boolean fields;
+HW IP nodes (DPU) carry rotation. Cytoscape renders small
+color-coded badges (C=blue, L=teal, R=red) at the top-left
+corner of each node when the flag is true, repositioned on
+pan/zoom. Node detail panel shows the values with color
+indicators. uhd30_recording.yaml updated with realistic
+values: enc_buf (no compression/LLC), preview_buf (AFBC+LLC),
+bitstream (no compression/LLC), DPU (rotation enabled).
+---
+ scenarios/usecase/uhd30_recording.yaml     | 15 ++++--
+ src/mmscenario/schema/models.py            |  5 +-
+ src/mmscenario/view/data_prep.py           | 31 +++++++------
+ src/mmscenario/view/templates/base.html.j2 | 54 ++++++++++++++++++++++
+ 4 files changed, 87 insertions(+), 18 deletions(-)
+
+diff --git a/scenarios/usecase/uhd30_recording.yaml b/scenarios/usecase/uhd30_recording.yaml
+index f618a05..48bef12 100644
+--- a/scenarios/usecase/uhd30_recording.yaml
++++ b/scenarios/usecase/uhd30_recording.yaml
+@@ -147,26 +147,33 @@ pipeline:
+       type: hw_ip
+       label: DPU
+       layer: hw
+-      comment: "Display Processing Unit — HW overlay path. GPU composition is the risk variant."
++      rotation: true
++      comment: "Display Processing Unit — HW overlay path. Rotation enabled (portrait recording). GPU composition is the risk variant."
+ 
+     # ── Memory / Buffer layer ──────────────────────────────────────────────────
+     - id: enc_buf
+       type: buffer
+       label: "Encode Buffer\nNV12 · 3840×2160"
+       layer: memory
+-      comment: "ISP M2M output DMA-buf — shared between ISP (producer) and MFC (consumer)"
++      compression: false
++      llc: false
++      comment: "ISP M2M output → MFC. No compression (MFC requires raw NV12). No LLC (streaming write, sequential)."
+ 
+     - id: preview_buf
+       type: buffer
+       label: "Preview Buffer\nNV12 · 1920×1080"
+       layer: memory
+-      comment: "ISP preview output — shared between ISP (producer) and DPU via SurfaceFlinger"
++      compression: true
++      llc: true
++      comment: "ISP preview output → DPU. AFBC compressed (reduces BW ~40%). LLC enabled (DPU reads repeatedly per scanout)."
+ 
+     - id: bitstream
+       type: buffer
+       label: "Encoded Bitstream\n(H.265 / AV1)"
+       layer: memory
+-      comment: "MFC output buffer — picked up by Codec2 HAL and handed to MediaMuxer"
++      compression: false
++      llc: false
++      comment: "MFC output → MediaMuxer file write. Compressed bitstream (codec-level, not memory compression). No LLC (sequential file write)."
+ 
+   edges:
+     # ══ SW control stack: camera capture path ════════════════════════════════
+diff --git a/src/mmscenario/schema/models.py b/src/mmscenario/schema/models.py
+index 545ea87..fda8268 100644
+--- a/src/mmscenario/schema/models.py
++++ b/src/mmscenario/schema/models.py
+@@ -83,7 +83,10 @@ class L1Node(BaseModel):
+     layer: Literal["app", "framework", "hal", "kernel", "hw", "memory"]
+     sw_thread: Optional[Literal["app", "framework", "hal_kernel"]] = None
+     comment: Optional[str] = None
+-    external: bool = False  # True for components outside SoC boundary (sensor, display, etc.)
++    external: bool = False        # True for components outside SoC boundary (sensor, display, etc.)
++    compression: Optional[bool] = None  # Buffer: AFBC/SBWC compression enabled → badge 'C'
++    llc: Optional[bool] = None          # Buffer: Last Level Cache usage → badge 'L'
++    rotation: Optional[bool] = None     # HW IP (DPU): rotation enabled → badge 'R'
+ 
+ 
+ class L1Edge(BaseModel):
+diff --git a/src/mmscenario/view/data_prep.py b/src/mmscenario/view/data_prep.py
+index ac5caa8..93c8add 100644
+--- a/src/mmscenario/view/data_prep.py
++++ b/src/mmscenario/view/data_prep.py
+@@ -47,19 +47,24 @@ def build_cytoscape_elements(
+         layer_info = LAYER_STYLE.get(node.layer, {})
+         # External SoC components use gray; internal use layer color
+         color = EXTERNAL_COLOR if node.external else layer_info.get("color", "#999")
+-        elements.append({
+-            "data": {
+-                "id": node.id,
+-                "label": node.label,
+-                "type": node.type.value,
+-                "layer": node.layer,
+-                "color": color,
+-                "shape": NODE_TYPE_SHAPE.get(node.type.value, "rectangle"),
+-                "comment": node.comment or "",
+-                "external": node.external,
+-            },
+-            "position": pos,
+-        })
++        data: dict = {
++            "id": node.id,
++            "label": node.label,
++            "type": node.type.value,
++            "layer": node.layer,
++            "color": color,
++            "shape": NODE_TYPE_SHAPE.get(node.type.value, "rectangle"),
++            "comment": node.comment or "",
++            "external": node.external,
++        }
++        # Badge flags — only include when explicitly set (None = not applicable)
++        if node.compression is not None:
++            data["compression"] = node.compression
++        if node.llc is not None:
++            data["llc"] = node.llc
++        if node.rotation is not None:
++            data["rotation"] = node.rotation
++        elements.append({"data": data, "position": pos})
+ 
+     for edge in pipeline._data.edges:
+         label_parts: list[str] = []
+diff --git a/src/mmscenario/view/templates/base.html.j2 b/src/mmscenario/view/templates/base.html.j2
+index 31696e8..724cf0c 100644
+--- a/src/mmscenario/view/templates/base.html.j2
++++ b/src/mmscenario/view/templates/base.html.j2
+@@ -78,6 +78,19 @@
+   .risk-medium { background: #fef3cd; border-left: 3px solid #f39c12; }
+   .risk-low    { background: #e8f8ee; border-left: 3px solid #27ae60; }
+ 
++  /* ── Node badges (C / L / R) ── */
++  .node-badge {
++    position: absolute;
++    width: 13px; height: 13px;
++    font-size: 8px; font-weight: 700;
++    line-height: 13px; text-align: center;
++    border-radius: 3px;
++    color: #fff;
++    pointer-events: none;
++    z-index: 20;
++    box-shadow: 0 1px 2px rgba(0,0,0,0.35);
++  }
++
+   /* ── Print snapshot ── */
+   @media print {
+     .toolbar, .tab-bar, .detail-panel, header button { display: none !important; }
+@@ -385,6 +398,38 @@ function drawLaneDividers() {
+ }
+ cy.on('pan zoom', drawLaneDividers);
+ 
++// ── Node badges: C (compression) / L (LLC) / R (rotation) ────────
++// Rendered as absolutely-positioned HTML overlays on top-left of each node.
++var BADGE_DEFS = [
++  { key: 'compression', text: 'C', color: '#2471a3', title: 'Compression (AFBC / SBWC)' },
++  { key: 'llc',         text: 'L', color: '#117a65', title: 'Last Level Cache (LLC)' },
++  { key: 'rotation',    text: 'R', color: '#922b21', title: 'Rotation enabled' },
++];
++
++function drawNodeBadges() {
++  document.querySelectorAll('.node-badge').forEach(function(el) { el.remove(); });
++  var container = document.getElementById('cy');
++  cy.nodes().forEach(function(node) {
++    var d = node.data();
++    var active = BADGE_DEFS.filter(function(b) { return d[b.key] === true; });
++    if (!active.length) return;
++    var bb = node.renderedBoundingBox({ includeLabels: false });
++    active.forEach(function(badge, i) {
++      var el = document.createElement('div');
++      el.className = 'node-badge';
++      el.textContent = badge.text;
++      el.title = badge.title;
++      el.style.background = badge.color;
++      el.style.left = (bb.x1 + 2 + i * 15) + 'px';
++      el.style.top  = (bb.y1 + 2) + 'px';
++      container.appendChild(el);
++    });
++  });
++}
++
++drawNodeBadges();
++cy.on('pan zoom resize', drawNodeBadges);
++
+ // ── Interactions ─────────────────────────────────────────────────
+ 
+ cy.on('tap', 'node', function(evt) {
+@@ -457,6 +502,15 @@ function showNodeDetail(data) {
+   html += row('Type', data.type);
+   html += row('Layer', data.layer);
+   if (data.external) html += row('Boundary', '<span style="color:#c0392b;font-weight:600">External (off-SoC)</span>');
++  if (data.compression != null) html += row('Compression', data.compression
++    ? '<span style="color:#2471a3;font-weight:600">&#9646; Enabled (AFBC/SBWC)</span>'
++    : '<span style="color:#888">Disabled</span>');
++  if (data.llc != null) html += row('LLC', data.llc
++    ? '<span style="color:#117a65;font-weight:600">&#9646; Enabled</span>'
++    : '<span style="color:#888">Disabled</span>');
++  if (data.rotation != null) html += row('Rotation', data.rotation
++    ? '<span style="color:#922b21;font-weight:600">&#9646; Enabled</span>'
++    : '<span style="color:#888">Disabled</span>');
+   if (data.comment) html += row('Comment', data.comment);
+   html += '</table>';
+ 
+-- 
+2.50.1.windows.1
+

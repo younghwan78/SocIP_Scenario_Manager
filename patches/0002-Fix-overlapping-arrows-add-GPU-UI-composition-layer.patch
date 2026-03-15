@@ -1,0 +1,166 @@
+From 8bf1a13689d73ec4979c2758a657d662b4fb0b92 Mon Sep 17 00:00:00 2001
+From: YounghwanJoo <neokein@gmail.com>
+Date: Sun, 15 Mar 2026 23:55:10 +0900
+Subject: [PATCH 2/3] Fix overlapping arrows; add GPU UI composition layer
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Arrow overlap: replace same-source fan-out stagger with
+level-pair stagger — edges grouped by (src-topo-level,
+tgt-topo-level) get taxi-turn spread 20%…80%, separating
+parallel vertical segments (enc_buf→mfc and preview_buf→dpu
+no longer share the same x-column route).
+
+GPU UI layer: add GPU hw_ip node and ui_buf (ARGB8888
+1920x1080, LLC-backed). CameraApp GLES UI is GPU-composited
+into ui_buf and fed to DPU as a second HW overlay plane
+(plane 1) blended with the camera preview (plane 0).
+Control edges: camera_app→gpu and surfaceflinger→gpu.
+---
+ scenarios/usecase/uhd30_recording.yaml     | 50 ++++++++++++++++++++--
+ src/mmscenario/view/templates/base.html.j2 | 31 ++++++++++----
+ 2 files changed, 69 insertions(+), 12 deletions(-)
+
+diff --git a/scenarios/usecase/uhd30_recording.yaml b/scenarios/usecase/uhd30_recording.yaml
+index 48bef12..9c3678a 100644
+--- a/scenarios/usecase/uhd30_recording.yaml
++++ b/scenarios/usecase/uhd30_recording.yaml
+@@ -24,10 +24,12 @@ scenario:
+     Android camera pipeline recording UHD (3840×2160) video at 30 fps.
+     The ISP processes RAW sensor data via an M2M path (2-frame latency) and
+     fans out to two paths: an encode path (ISP→enc_buf→MFC→bitstream→storage)
+-    and a preview path (ISP→preview_buf→DPU→display). SW control flows from
+-    CameraApp through Camera2 API → CameraHAL3 → V4L2 kernel driver → ISP.
+-    Encode is driven by MediaCodec FW → Codec2 HAL → MFC kernel driver → MFC.
+-    Preview composition uses DPU HW overlay (SurfaceFlinger → DRM/KMS → DPU).
++    and a preview path (ISP→preview_buf→DPU→display). CameraApp UI (viewfinder
++    overlay, shutter button) is GPU-composited (ARGB8888 1920×1080) into a
++    separate ui_buf, blended by DPU as a second HW overlay plane on top of the
++    preview. SW control: CameraApp → Camera2 API → CameraHAL3 → V4L2 Driver → ISP;
++    Encode: MediaCodec FW → Codec2 HAL → MFC Driver → MFC;
++    Display: SurfaceFlinger → DRM/KMS → DPU.
+   sw_thread: hal_kernel
+   output_period_ms: 33.3      # 30fps — SW+HW combined output within this period
+   budget_ms: 30.0
+@@ -131,6 +133,12 @@ pipeline:
+       comment: "MediaMuxer writes encoded bitstream to file via VFS/block layer"
+ 
+     # ── HW layer: on-SoC ──────────────────────────────────────────────────────
++    - id: gpu
++      type: hw_ip
++      label: GPU
++      layer: hw
++      comment: "GPU composes CameraApp UI surfaces (viewfinder overlay, shutter button) via GLES; outputs ARGB8888 to ui_buf"
++
+     - id: isp
+       type: hw_ip
+       label: ISP_0
+@@ -151,6 +159,14 @@ pipeline:
+       comment: "Display Processing Unit — HW overlay path. Rotation enabled (portrait recording). GPU composition is the risk variant."
+ 
+     # ── Memory / Buffer layer ──────────────────────────────────────────────────
++    - id: ui_buf
++      type: buffer
++      label: "UI Buffer\nARGB8888 · 1920×1080"
++      layer: memory
++      compression: false
++      llc: true
++      comment: "GPU output: CameraApp UI layer (viewfinder overlay). ARGB8888 uncompressed. LLC-backed — DPU reads each scanout from LLC."
++
+     - id: enc_buf
+       type: buffer
+       label: "Encode Buffer\nNV12 · 3840×2160"
+@@ -244,6 +260,19 @@ pipeline:
+       role: control
+       branch_condition: "DPU register write: overlay config"
+ 
++    # ── GPU UI composition path: App + SF → GPU → ui_buf → DPU ──────────────
++    - id: e_app_gpu
++      source: camera_app
++      target: gpu
++      role: control
++      branch_condition: "GLES draw: viewfinder UI surfaces"
++
++    - id: e_sf_gpu
++      source: surfaceflinger
++      target: gpu
++      role: control
++      branch_condition: "GPU composition trigger (HWC decision)"
++
+     # ══ Data path: HW buffer DMA transfers ═══════════════════════════════════
+     - id: e_sensor_isp
+       source: sensor
+@@ -277,9 +306,22 @@ pipeline:
+       source: bitstream
+       target: storage_write
+ 
++    - id: e_gpu_ui
++      source: gpu
++      target: ui_buf
++      format: ARGB8888
++      resolution: "1920x1080"
++      fps: 30
++
+     - id: e_preview_dpu
+       source: preview_buf
+       target: dpu
++      branch_condition: "DPU plane 0: camera preview"
++
++    - id: e_ui_dpu
++      source: ui_buf
++      target: dpu
++      branch_condition: "DPU plane 1: UI overlay (blended in DPU)"
+ 
+     - id: e_dpu_display
+       source: dpu
+diff --git a/src/mmscenario/view/templates/base.html.j2 b/src/mmscenario/view/templates/base.html.j2
+index 724cf0c..23a5891 100644
+--- a/src/mmscenario/view/templates/base.html.j2
++++ b/src/mmscenario/view/templates/base.html.j2
+@@ -289,19 +289,34 @@ var cy = cytoscape({
+   ],
+ });
+ 
+-// ── Fan-out separation: stagger taxi-turn for edges sharing the same source ──
+-(function separateFanOutEdges() {
+-  var srcMap = {};
++// ── Edge stagger: prevent overlapping taxi routes ─────────────────
++// Group edges by (source topological level → target topological level).
++// Edges in the same group share an identical horizontal path segment,
++// so we spread their taxi-turn values (20 %…80 %) to push the vertical
++// segment to different x positions.
++(function staggerEdgesByLevelPair() {
++  var X_STEP = 200;
++
++  // Determine topological level of each node from its preset x position
++  var nodeLevel = {};
++  cy.nodes().forEach(function(n) {
++    nodeLevel[n.id()] = Math.round(n.position('x') / X_STEP);
++  });
++
++  // Group by "srcLevel->tgtLevel"
++  var pairMap = {};
+   cy.edges().forEach(function(e) {
+-    var s = e.data('source');
+-    if (!srcMap[s]) srcMap[s] = [];
+-    srcMap[s].push(e);
++    var key = nodeLevel[e.data('source')] + '->' + nodeLevel[e.data('target')];
++    if (!pairMap[key]) pairMap[key] = [];
++    pairMap[key].push(e);
+   });
+-  Object.values(srcMap).forEach(function(edges) {
++
++  Object.values(pairMap).forEach(function(edges) {
+     if (edges.length < 2) return;
+     var n = edges.length;
+     edges.forEach(function(e, i) {
+-      var turn = 30 + i * (40 / (n - 1));
++      // Spread turns evenly from 20 % to 80 %
++      var turn = 20 + i * (60 / (n - 1));
+       e.style('taxi-turn', Math.round(turn) + '%');
+     });
+   });
+-- 
+2.50.1.windows.1
+

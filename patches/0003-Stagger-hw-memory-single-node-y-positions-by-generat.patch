@@ -1,0 +1,47 @@
+From a6b77eeb78101e1056c9f02e7736de08047cd25a Mon Sep 17 00:00:00 2001
+From: YounghwanJoo <neokein@gmail.com>
+Date: Mon, 16 Mar 2026 00:02:40 +0900
+Subject: [PATCH 3/3] Stagger hw/memory single-node y positions by generation
+ parity
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Single nodes in hw or memory layer at adjacent topological
+generations were placed at the same y=base, making GPU and ISP
+appear on the same horizontal line. Now alternates y by ±Y_STEP/2
+(±40px) based on generation parity (odd → +40, even → -40):
+  GPU  gen 3 (odd) → y=720,  ISP gen 4 (even) → y=640
+  mfc/dpu gen 6: already in same group → spread as before.
+---
+ src/mmscenario/dag/pipeline.py | 13 +++++++++++--
+ 1 file changed, 11 insertions(+), 2 deletions(-)
+
+diff --git a/src/mmscenario/dag/pipeline.py b/src/mmscenario/dag/pipeline.py
+index 8df8b03..d497b8d 100644
+--- a/src/mmscenario/dag/pipeline.py
++++ b/src/mmscenario/dag/pipeline.py
+@@ -136,9 +136,18 @@ class ScenarioPipeline:
+         for (lvl, layer), node_ids in groups.items():
+             base_x = lvl * X_STEP
+             base_y = LAYER_Y.get(layer, 300.0)
++            n = len(node_ids)
+             for i, node_id in enumerate(node_ids):
+-                # Center the group vertically around base_y
+-                offset = (i - (len(node_ids) - 1) / 2) * Y_STEP
++                if n == 1 and layer in ("hw", "memory"):
++                    # Single node in this (gen, layer) bucket: alternate y by
++                    # generation parity so adjacent-generation nodes in the
++                    # same layer end up at different y positions.
++                    # e.g. GPU (gen 3, odd) at base+40, ISP (gen 4, even) at base-40
++                    alt = (Y_STEP / 2) * (1 if lvl % 2 else -1)
++                    offset: float = alt
++                else:
++                    # Multiple nodes in same column/layer: spread symmetrically
++                    offset = (i - (n - 1) / 2) * Y_STEP
+                 layout[node_id] = {"x": base_x, "y": base_y + offset}
+ 
+         return layout
+-- 
+2.50.1.windows.1
+
