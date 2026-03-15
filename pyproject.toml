@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mmscenario"
+version = "0.1.0"
+description = "Multimedia Scenario DB for SoC PPA analysis"
+requires-python = ">=3.10"
+dependencies = [
+    "ruamel.yaml>=0.18",
+    "pydantic>=2.0",
+    "networkx>=3.0",
+    "Jinja2>=3.1",
+]
+
+[project.scripts]
+mmscenario = "mmscenario.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

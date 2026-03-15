@@ -1,0 +1,586 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{ scenario.scenario.name }}</title>
+<style>
+  /* ── Reset & base ── */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', system-ui, sans-serif; font-size: 14px;
+         background: #f5f7fa; color: #333; display: flex; flex-direction: column; height: 100vh; }
+
+  /* ── Header ── */
+  header { background: #1a2a4a; color: #fff; padding: 10px 20px;
+           display: flex; align-items: center; gap: 16px; flex-shrink: 0; }
+  header h1 { font-size: 16px; font-weight: 600; }
+  header .meta { font-size: 12px; color: #aac; }
+  header .spacer { flex: 1; }
+
+  /* ── Tab bar ── */
+  .tab-bar { background: #253555; display: flex; gap: 2px; padding: 0 20px; flex-shrink: 0; }
+  .tab { padding: 8px 18px; cursor: pointer; color: #8aa; font-size: 13px;
+         border-bottom: 3px solid transparent; user-select: none; }
+  .tab:hover { color: #fff; }
+  .tab.active { color: #fff; border-bottom-color: #5b9bd5; }
+
+  /* ── Main layout ── */
+  .main { display: flex; flex: 1; overflow: hidden; }
+
+  /* ── Toolbar ── */
+  .toolbar { background: #fff; border-bottom: 1px solid #dde;
+             padding: 6px 16px; display: flex; align-items: center; gap: 12px;
+             flex-shrink: 0; flex-wrap: wrap; }
+  .toolbar label { font-size: 12px; color: #666; }
+  .toolbar select, .toolbar button { font-size: 12px; padding: 3px 8px; border: 1px solid #ccc;
+                                      border-radius: 3px; cursor: pointer; background: #fff; }
+  .toolbar button:hover { background: #eef; }
+  .layer-toggle { display: flex; gap: 8px; }
+  .layer-group-label { font-size: 10px; color: #aaa; align-self: center; }
+  .layer-btn { padding: 3px 10px; border-radius: 12px; border: 1px solid #ccc;
+               cursor: pointer; font-size: 11px; background: #fff; }
+  .layer-btn.active { color: #fff; border-color: transparent; }
+  .layer-btn[data-layer="app"].active       { background: #8e44ad; }
+  .layer-btn[data-layer="framework"].active { background: #2980b9; }
+  .layer-btn[data-layer="hal"].active       { background: #16a085; }
+  .layer-btn[data-layer="kernel"].active    { background: #2c3e50; }
+  .layer-btn[data-layer="hw"].active        { background: #E67E22; }
+  .layer-btn[data-layer="memory"].active    { background: #27AE60; }
+
+  /* ── Graph + panel ── */
+  .graph-area { display: flex; flex: 1; overflow: hidden; }
+  #cy { flex: 1; background: #fafbfd; position: relative; }
+  .detail-panel { width: 280px; background: #fff; border-left: 1px solid #dde;
+                  overflow-y: auto; padding: 16px; flex-shrink: 0; }
+  .detail-panel h3 { font-size: 13px; color: #1a2a4a; margin-bottom: 10px; }
+  .prop-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .prop-table td { padding: 4px 6px; border-bottom: 1px solid #eee; vertical-align: top; }
+  .prop-table td:first-child { color: #777; width: 45%; font-weight: 500; }
+  .review-flag { background: #fff3cd; border-radius: 3px; padding: 2px 6px;
+                 font-size: 11px; color: #856404; margin-top: 4px; display: block; }
+  .empty-hint { color: #aaa; font-size: 12px; margin-top: 20px; text-align: center; }
+
+  /* ── Layer lane backgrounds ── */
+  .lane-label { position: absolute; left: 4px; font-size: 10px; font-weight: 600;
+                color: #888; pointer-events: none; z-index: 10; }
+
+  /* ── Variant selector ── */
+  #variant-section { margin-top: 12px; border-top: 1px solid #eee; padding-top: 10px; }
+  #variant-table { width: 100%; border-collapse: collapse; font-size: 11px; margin-top: 6px; }
+  #variant-table th { background: #f0f4f8; padding: 4px 6px; text-align: left; font-weight: 600; }
+  #variant-table td { padding: 4px 6px; border-bottom: 1px solid #eee; }
+  .changed { background: #fff3cd; font-weight: 600; }
+
+  /* ── Risk summary ── */
+  .risk-section { margin-top: 12px; border-top: 1px solid #eee; padding-top: 10px; }
+  .risk-item { border-radius: 4px; padding: 6px 8px; margin-bottom: 6px; font-size: 12px; }
+  .risk-high   { background: #fde8e8; border-left: 3px solid #e74c3c; }
+  .risk-medium { background: #fef3cd; border-left: 3px solid #f39c12; }
+  .risk-low    { background: #e8f8ee; border-left: 3px solid #27ae60; }
+
+  /* ── Print snapshot ── */
+  @media print {
+    .toolbar, .tab-bar, .detail-panel, header button { display: none !important; }
+    body { background: #fff; }
+    #cy { flex: none; width: 100vw; height: 90vh; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>{{ scenario.scenario.name }}</h1>
+  <span class="meta">v{{ scenario.scenario.version }} · {{ scenario.scenario.category }}</span>
+  <span class="meta">output_period: {{ scenario.scenario.output_period_ms }}ms · budget: {{ scenario.scenario.budget_ms }}ms</span>
+  <span class="spacer"></span>
+  <button onclick="window.print()" style="background:#2a3f6a;color:#fff;border:none;padding:5px 12px;border-radius:3px;cursor:pointer;">⎙ Snapshot</button>
+</header>
+
+<div class="tab-bar">
+  <div class="tab active" id="tab-executive" onclick="switchMode('executive')">Executive</div>
+  <div class="tab"        id="tab-architect" onclick="switchMode('architect')">Architect</div>
+</div>
+
+<div class="toolbar">
+  <label>Layers:</label>
+  <div class="layer-toggle">
+    <span class="layer-group-label">SW:</span>
+    <button class="layer-btn active" data-layer="app"       onclick="toggleLayer(this)">App</button>
+    <button class="layer-btn active" data-layer="framework" onclick="toggleLayer(this)">Framework</button>
+    <button class="layer-btn active" data-layer="hal"       onclick="toggleLayer(this)">HAL</button>
+    <button class="layer-btn active" data-layer="kernel"    onclick="toggleLayer(this)">Kernel</button>
+    <span style="width:1px;background:#dde;align-self:stretch;margin:2px 4px"></span>
+    <button class="layer-btn active" data-layer="hw"        onclick="toggleLayer(this)">HW</button>
+    <button class="layer-btn active" data-layer="memory"    onclick="toggleLayer(this)">Buffer</button>
+  </div>
+  <!-- Architect-only: IP focus selector -->
+  {% if scenario.ip_activity %}
+  <span id="architect-toolbar" style="display:none;gap:8px;align-items:center;margin-left:8px;">
+    <label>IP Focus:</label>
+    <select id="ip-select" onchange="highlightIP(this.value)">
+      <option value="">All</option>
+      {% for ip in scenario.ip_activity.ip_instances %}
+      <option value="{{ ip.id }}">{{ ip.id }}</option>
+      {% endfor %}
+    </select>
+  </span>
+  {% endif %}
+  <span id="toolbar-mode-label" style="font-size:12px;color:#888;margin-left:8px;">
+    Executive View — scenario overview &amp; risk summary
+  </span>
+</div>
+
+<div class="main">
+  <div class="graph-area">
+    <div id="cy"></div>
+  </div>
+  <div class="detail-panel" id="detail-panel">
+    <h3>Node / Edge Detail</h3>
+    <p class="empty-hint">Click a node or edge to see details.</p>
+
+    <!-- Architect-only: IP + BW summary tables (always visible in architect mode) -->
+    {% if scenario.ip_activity %}
+    <div id="ip-summary" style="display:none;margin-top:16px;border-top:1px solid #eee;padding-top:12px;">
+      <strong style="font-size:12px;">IP Summary</strong>
+      <table class="prop-table" style="margin-top:8px;">
+        <tr style="font-size:11px;font-weight:600;">
+          <td>IP</td><td>freq (MHz)</td><td>ratio</td><td>source</td>
+        </tr>
+        {% for ip in scenario.ip_activity.ip_instances %}
+        <tr>
+          <td>{{ ip.id }}</td>
+          <td>{{ ip.freq_mhz if ip.freq_mhz is not none else '—' }}</td>
+          <td>{{ ip.active_ratio if ip.active_ratio is not none else '—' }}</td>
+          <td>{{ ip.source }}</td>
+        </tr>
+        {% endfor %}
+      </table>
+    </div>
+    {% endif %}
+    {% if scenario.bus_memory %}
+    <div id="bw-summary" style="display:none;margin-top:12px;border-top:1px solid #eee;padding-top:10px;">
+      <strong style="font-size:12px;">BW Summary</strong>
+      <table class="prop-table" style="margin-top:8px;">
+        <tr style="font-size:11px;font-weight:600;">
+          <td>Bus</td><td>Read GB/s</td><td>Write GB/s</td><td>source</td>
+        </tr>
+        {% for entry in scenario.bus_memory.bus_entries %}
+        <tr>
+          <td>{{ entry.id }}</td>
+          <td>{{ entry.bw_read_gbps if entry.bw_read_gbps is not none else '—' }}</td>
+          <td>{{ entry.bw_write_gbps if entry.bw_write_gbps is not none else '—' }}</td>
+          <td>{{ entry.source }}</td>
+        </tr>
+        {% endfor %}
+      </table>
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+<!-- Inline Cytoscape.js bundle -->
+<script>{{ cytoscape_bundle | safe }}</script>
+
+<script>
+// ── Data from Python ──────────────────────────────────────────────
+var ELEMENTS   = {{ elements | tojson }};
+var SCENARIO   = {{ scenario | tojson }};
+var LAYER_Y    = { app: 0, framework: 160, hal: 320, kernel: 480, hw: 680, memory: 860 };
+var MODE       = "executive";
+
+// ── Cytoscape init ───────────────────────────────────────────────
+var cy = cytoscape({
+  container: document.getElementById('cy'),
+  elements: ELEMENTS,
+  layout: { name: 'preset' },
+  style: [
+    {
+      selector: 'node',
+      style: {
+        'label': 'data(label)',
+        'shape': 'data(shape)',
+        'background-color': 'data(color)',
+        'color': '#fff',
+        'font-size': '11px',
+        'text-valign': 'center',
+        'text-halign': 'center',
+        'width': 120,
+        'height': 40,
+        'text-wrap': 'wrap',
+        'text-max-width': '110px',
+        'border-width': 2,
+        'border-color': '#fff',
+      }
+    },
+    {
+      selector: 'node[layer="memory"]',
+      style: {
+        'width': 100,
+        'height': 36,
+        'font-size': '10px',
+      }
+    },
+    {
+      selector: 'edge',
+      style: {
+        'width': 2,
+        'line-color': '#aab',
+        'target-arrow-color': '#aab',
+        'target-arrow-shape': 'triangle',
+        'curve-style': 'taxi',
+        'taxi-direction': 'rightward',
+        'taxi-turn': '60%',
+        'label': 'data(label)',
+        'font-size': '9px',
+        'color': '#666',
+        'text-background-color': '#fff',
+        'text-background-opacity': 0.8,
+        'text-background-padding': '2px',
+      }
+    },
+    {
+      selector: 'edge[?fan_out]',
+      style: { 'line-style': 'dashed', 'width': 2.5 }
+    },
+    {
+      selector: 'edge[role="control"]',
+      style: {
+        'line-style': 'dotted',
+        'line-color': '#8e44ad',
+        'target-arrow-color': '#8e44ad',
+        'width': 1.5,
+        'opacity': 0.75,
+        'font-size': '8px',
+        'color': '#8e44ad',
+      }
+    },
+    {
+      selector: 'node[?external]',
+      style: {
+        'border-style': 'dashed',
+        'border-width': 2.5,
+        'border-color': '#aaa',
+        'font-style': 'italic',
+        'opacity': 0.85,
+      }
+    },
+    {
+      selector: '.highlighted',
+      style: { 'line-color': '#e67e22', 'target-arrow-color': '#e67e22',
+                'background-color': '#e67e22', 'border-color': '#e67e22', 'width': 3 }
+    },
+    {
+      selector: '.dimmed',
+      style: { 'opacity': 0.25 }
+    },
+  ],
+});
+
+// ── Fan-out separation: stagger taxi-turn for edges sharing the same source ──
+(function separateFanOutEdges() {
+  var srcMap = {};
+  cy.edges().forEach(function(e) {
+    var s = e.data('source');
+    if (!srcMap[s]) srcMap[s] = [];
+    srcMap[s].push(e);
+  });
+  Object.values(srcMap).forEach(function(edges) {
+    if (edges.length < 2) return;
+    var n = edges.length;
+    edges.forEach(function(e, i) {
+      var turn = 30 + i * (40 / (n - 1));
+      e.style('taxi-turn', Math.round(turn) + '%');
+    });
+  });
+})();
+
+// Draw layer lane lines as background overlay
+drawLaneDividers();
+cy.on('resize', drawLaneDividers);
+
+function drawLaneDividers() {
+  document.querySelectorAll('.lane-overlay').forEach(function(el) { el.remove(); });
+  var container = document.getElementById('cy');
+  var containerH = container.clientHeight;
+
+  // ── Horizontal lane separator lines ──────────────────────────
+  var separators = [
+    {y: 80,  style: '1px dashed #dde'},
+    {y: 240, style: '1px dashed #dde'},
+    {y: 400, style: '1px dashed #dde'},
+    {y: 580, style: '2px solid #c8ccd4'},  // SW ↔ HW boundary
+    {y: 770, style: '1px dashed #cce'},
+  ];
+  separators.forEach(function(sep) {
+    var renderedY = cy.pan().y + sep.y * cy.zoom();
+    var line = document.createElement('div');
+    line.className = 'lane-overlay';
+    line.style.cssText = 'position:absolute;left:0;right:0;border-top:' + sep.style + ';pointer-events:none;z-index:5;top:' + renderedY + 'px';
+    container.appendChild(line);
+  });
+
+  // ── Y-axis layer labels (left side) ──────────────────────────
+  var layerLabels = [
+    {y: LAYER_Y.app,       text: 'App',       color: '#8e44ad'},
+    {y: LAYER_Y.framework, text: 'Framework', color: '#2980b9'},
+    {y: LAYER_Y.hal,       text: 'HAL',       color: '#16a085'},
+    {y: LAYER_Y.kernel,    text: 'Kernel',    color: '#2c3e50'},
+    {y: LAYER_Y.hw,        text: 'HW',        color: '#E67E22'},
+    {y: LAYER_Y.memory,    text: 'Buffer',    color: '#27AE60'},
+  ];
+  layerLabels.forEach(function(l) {
+    var renderedY = cy.pan().y + l.y * cy.zoom();
+    var lbl = document.createElement('div');
+    lbl.className = 'lane-overlay lane-label';
+    lbl.textContent = l.text;
+    lbl.style.cssText = 'position:absolute;left:4px;font-size:10px;font-weight:600;color:' + l.color + ';pointer-events:none;z-index:10;top:' + (renderedY - 8) + 'px';
+    container.appendChild(lbl);
+  });
+
+  // ── X-axis: pipeline stage markers ───────────────────────────
+  var xSet = {};
+  ELEMENTS.forEach(function(el) {
+    if (el.position !== undefined) {
+      var xModel = el.position.x;
+      if (!(xModel in xSet)) xSet[xModel] = 0;
+      xSet[xModel]++;
+    }
+  });
+  var xValues = Object.keys(xSet).map(Number).sort(function(a,b){return a-b;});
+
+  xValues.forEach(function(xModel, idx) {
+    var renderedX = cy.pan().x + xModel * cy.zoom();
+    if (renderedX < 0 || renderedX > container.clientWidth) return;
+
+    var vline = document.createElement('div');
+    vline.className = 'lane-overlay';
+    vline.style.cssText = 'position:absolute;top:0;bottom:0;border-left:1px dotted #dde;pointer-events:none;z-index:4;left:' + renderedX + 'px';
+    container.appendChild(vline);
+
+    var stgLbl = document.createElement('div');
+    stgLbl.className = 'lane-overlay';
+    stgLbl.textContent = 'S' + idx;
+    stgLbl.title = 'Pipeline stage ' + idx + ' (topological order)';
+    stgLbl.style.cssText = [
+      'position:absolute', 'font-size:9px', 'color:#bbb',
+      'pointer-events:none', 'z-index:10',
+      'left:' + (renderedX + 3) + 'px', 'bottom:4px', 'white-space:nowrap',
+    ].join(';');
+    container.appendChild(stgLbl);
+  });
+
+  // ── X-axis time budget note (bottom-right) ───────────────────
+  var period = SCENARIO.scenario && SCENARIO.scenario.output_period_ms;
+  var budget = SCENARIO.scenario && SCENARIO.scenario.budget_ms;
+  if (period || budget) {
+    var note = document.createElement('div');
+    note.className = 'lane-overlay';
+    var parts = [];
+    if (period) parts.push('period: ' + period + 'ms');
+    if (budget) parts.push('budget: ' + budget + 'ms');
+    note.textContent = parts.join(' / ') + '  (x = pipeline order, not actual time)';
+    note.style.cssText = 'position:absolute;right:8px;bottom:4px;font-size:9px;color:#bbb;pointer-events:none;z-index:10;white-space:nowrap';
+    container.appendChild(note);
+  }
+}
+cy.on('pan zoom', drawLaneDividers);
+
+// ── Interactions ─────────────────────────────────────────────────
+
+cy.on('tap', 'node', function(evt) {
+  clearHighlight();
+  showNodeDetail(evt.target.data());
+});
+
+cy.on('tap', 'edge', function(evt) {
+  clearHighlight();
+  var edge = evt.target;
+  cy.elements().addClass('dimmed');
+  cy.getElementById(edge.data('source')).removeClass('dimmed').addClass('highlighted');
+  cy.getElementById(edge.data('target')).removeClass('dimmed').addClass('highlighted');
+  edge.removeClass('dimmed').addClass('highlighted');
+  showEdgeDetail(edge.data());
+});
+
+cy.on('tap', function(evt) {
+  if (evt.target === cy) { clearHighlight(); resetPanel(); }
+});
+
+function clearHighlight() { cy.elements().removeClass('highlighted dimmed'); }
+
+function resetPanel() {
+  if (MODE === 'executive') {
+    showScenarioOverview();
+  } else {
+    // In architect mode show empty hint + keep summary tables visible
+    var panel = document.getElementById('detail-panel');
+    panel.querySelector('h3').textContent = 'Node / Edge Detail';
+    var hint = panel.querySelector('.empty-hint');
+    if (hint) hint.style.display = '';
+  }
+}
+
+function showScenarioOverview() {
+  var sc = SCENARIO.scenario || {};
+  var html = '<h3>' + escHtml(sc.name || 'Scenario') + '</h3>';
+  if (sc.description) {
+    html += '<p style="font-size:12px;color:#555;line-height:1.5;margin-bottom:10px">' + escHtml(sc.description) + '</p>';
+  }
+  html += '<table class="prop-table">';
+  html += row('Category', sc.category || '—');
+  html += row('Version', sc.version || '—');
+  html += row('Period', (sc.output_period_ms || '—') + ' ms');
+  html += row('Budget', (sc.budget_ms || '—') + ' ms');
+  if (sc.pipeline_latency_frames != null) html += row('Latency', sc.pipeline_latency_frames + ' frames');
+  html += '</table>';
+  var risks = sc.risks || [];
+  if (risks.length) {
+    html += '<div class="risk-section"><strong style="font-size:12px">Risks</strong>';
+    risks.forEach(function(r) {
+      html += '<div class="risk-item risk-' + r.severity + '"><strong>' + r.severity.toUpperCase() + '</strong> ' + escHtml(r.description) + '</div>';
+    });
+    html += '</div>';
+  }
+  // Replace only the top part of the panel, keep architect summary divs intact
+  var panel = document.getElementById('detail-panel');
+  var ipSummary = document.getElementById('ip-summary');
+  var bwSummary = document.getElementById('bw-summary');
+  panel.innerHTML = html;
+  if (ipSummary) panel.appendChild(ipSummary);
+  if (bwSummary) panel.appendChild(bwSummary);
+}
+
+function showNodeDetail(data) {
+  var html = '<h3>' + escHtml(data.label) + '</h3>';
+  html += '<table class="prop-table">';
+  html += row('ID', data.id);
+  html += row('Type', data.type);
+  html += row('Layer', data.layer);
+  if (data.external) html += row('Boundary', '<span style="color:#c0392b;font-weight:600">External (off-SoC)</span>');
+  if (data.comment) html += row('Comment', data.comment);
+  html += '</table>';
+
+  // IP activity detail — Architect mode only
+  if (MODE === 'architect') {
+    var ipInfo = getIPInfo(data.id);
+    if (ipInfo) {
+      html += '<div id="variant-section">';
+      html += '<strong style="font-size:12px">IP Activity</strong>';
+      html += '<table class="prop-table" style="margin-top:6px">';
+      html += row('freq_mhz', ipInfo.freq_mhz != null ? ipInfo.freq_mhz : '—');
+      html += row('active_ratio', ipInfo.active_ratio != null ? ipInfo.active_ratio : '—');
+      html += row('source', ipInfo.source || '—');
+      html += '</table>';
+      if (ipInfo.variants && ipInfo.variants.length) {
+        html += '<br><strong style="font-size:11px">Variants</strong>';
+        html += '<table id="variant-table"><tr><th>Condition</th><th>freq_mhz</th><th>active_ratio</th></tr>';
+        ipInfo.variants.forEach(function(v) {
+          html += '<tr><td>' + escHtml(v.condition) + '</td><td>' + (v.freq_mhz != null ? v.freq_mhz : '—') + '</td><td>' + (v.active_ratio != null ? v.active_ratio : '—') + '</td></tr>';
+        });
+        html += '</table>';
+      }
+      if (ipInfo._review_flags && ipInfo._review_flags.length) {
+        ipInfo._review_flags.forEach(function(f) {
+          html += '<span class="review-flag">⚠ ' + escHtml(f.field) + ': ' + escHtml(f.reason) + '</span>';
+        });
+      }
+      html += '</div>';
+    }
+  }
+
+  var panel = document.getElementById('detail-panel');
+  var ipSummary = document.getElementById('ip-summary');
+  var bwSummary = document.getElementById('bw-summary');
+  panel.innerHTML = html;
+  if (ipSummary) panel.appendChild(ipSummary);
+  if (bwSummary) panel.appendChild(bwSummary);
+}
+
+function showEdgeDetail(data) {
+  var html = '<h3>Edge: ' + escHtml(data.id) + '</h3>';
+  html += '<table class="prop-table">';
+  html += row('Source', data.source);
+  html += row('Target', data.target);
+  if (data.label) html += row('Buffer', data.label);
+  if (data.fan_out) html += row('Fan-out', '✓');
+  if (data.branch_condition) html += row('Condition', data.branch_condition);
+  html += '</table>';
+  var panel = document.getElementById('detail-panel');
+  var ipSummary = document.getElementById('ip-summary');
+  var bwSummary = document.getElementById('bw-summary');
+  panel.innerHTML = html;
+  if (ipSummary) panel.appendChild(ipSummary);
+  if (bwSummary) panel.appendChild(bwSummary);
+}
+
+function getIPInfo(nodeId) {
+  if (!SCENARIO.ip_activity) return null;
+  return SCENARIO.ip_activity.ip_instances.find(function(ip) { return ip.id === nodeId; }) || null;
+}
+
+// I4: Layer toggle
+function toggleLayer(btn) {
+  var layer = btn.getAttribute('data-layer');
+  btn.classList.toggle('active');
+  cy.nodes('[layer="' + layer + '"]').style('display', btn.classList.contains('active') ? 'element' : 'none');
+}
+
+// ── Mode switch ──────────────────────────────────────────────────
+function switchMode(newMode) {
+  if (MODE === newMode) return;
+  MODE = newMode;
+
+  // Update tab active state
+  document.getElementById('tab-executive').classList.toggle('active', MODE === 'executive');
+  document.getElementById('tab-architect').classList.toggle('active', MODE === 'architect');
+
+  // Toolbar: mode label + architect IP selector
+  var modeLabel = document.getElementById('toolbar-mode-label');
+  var archToolbar = document.getElementById('architect-toolbar');
+  if (MODE === 'executive') {
+    modeLabel.innerHTML = 'Executive View \u2014 scenario overview &amp; risk summary';
+    if (archToolbar) archToolbar.style.display = 'none';
+  } else {
+    modeLabel.innerHTML = 'Architect View \u2014 IP operating conditions &amp; variant comparison';
+    if (archToolbar) { archToolbar.style.display = 'flex'; }
+    // Reset IP selector
+    var ipSel = document.getElementById('ip-select');
+    if (ipSel) { ipSel.value = ''; highlightIP(''); }
+  }
+
+  // Detail panel: architect summary tables visibility
+  var ipSummary = document.getElementById('ip-summary');
+  var bwSummary = document.getElementById('bw-summary');
+  if (ipSummary) ipSummary.style.display = MODE === 'architect' ? '' : 'none';
+  if (bwSummary) bwSummary.style.display = MODE === 'architect' ? '' : 'none';
+
+  clearHighlight();
+  resetPanel();
+}
+
+// IP focus (Architect)
+function highlightIP(ipId) {
+  cy.elements().removeClass('highlighted dimmed');
+  if (!ipId) return;
+  cy.elements().addClass('dimmed');
+  var node = cy.getElementById(ipId);
+  if (node.length) {
+    node.removeClass('dimmed').addClass('highlighted');
+    node.neighborhood().removeClass('dimmed');
+  }
+}
+
+// ── Utilities ────────────────────────────────────────────────────
+function row(k, v) {
+  return '<tr><td>' + escHtml(String(k)) + '</td><td>' + String(v) + '</td></tr>';
+}
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// Fit graph on load; show executive overview by default
+cy.ready(function() { cy.fit(undefined, 40); drawLaneDividers(); resetPanel(); });
+</script>
+
+</body>
+</html>

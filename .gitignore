@@ -1,0 +1,32 @@
+# ── Virtual environment ──────────────────────────────────────────
+.venv/
+venv/
+env/
+
+# ── Planning / requirements documents (internal, not for repo) ──
+multimedia_scenario_db_plan.md
+multimedia_scenario_db_plan.docx
+multimedia_scenario_db_requirements.md
+step1_2_requirements.docx
+*.docx
+
+# ── Python build artifacts ───────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+
+# ── Generated output ─────────────────────────────────────────────
+output/
+
+# ── Local tool settings ──────────────────────────────────────────
+.claude/
+
+# ── OS / Editor ──────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/

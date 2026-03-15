@@ -1,0 +1,4 @@
+ruamel.yaml>=0.18
+pydantic>=2.0
+networkx>=3.0
+Jinja2>=3.1

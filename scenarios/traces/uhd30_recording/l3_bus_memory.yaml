@@ -1,0 +1,20 @@
+# L3: Bus / Memory — UHD30 Video Recording
+# source: estimated → replace with "calculated" or "measured" after BW analysis.
+
+bus_memory:
+  bus_entries:
+    - id: ISP_read
+      bw_read_gbps: 4.2     # 3840x2160 x 30fps x NV12 (1.5 byte/px) ≈ estimated
+      source: estimated
+
+    - id: ISP_write
+      bw_write_gbps: 2.8
+      source: estimated
+
+    - id: MFC_read
+      bw_read_gbps: 1.5
+      source: estimated
+
+    - id: MFC_write
+      bw_write_gbps: 0.8
+      source: estimated
