@@ -24,10 +24,12 @@ scenario:
     Android camera pipeline recording UHD (3840×2160) video at 30 fps.
     The ISP processes RAW sensor data via an M2M path (2-frame latency) and
     fans out to two paths: an encode path (ISP→enc_buf→MFC→bitstream→storage)
-    and a preview path (ISP→preview_buf→DPU→display). SW control flows from
-    CameraApp through Camera2 API → CameraHAL3 → V4L2 kernel driver → ISP.
-    Encode is driven by MediaCodec FW → Codec2 HAL → MFC kernel driver → MFC.
-    Preview composition uses DPU HW overlay (SurfaceFlinger → DRM/KMS → DPU).
+    and a preview path (ISP→preview_buf→DPU→display). CameraApp UI (viewfinder
+    overlay, shutter button) is GPU-composited (ARGB8888 1920×1080) into a
+    separate ui_buf, blended by DPU as a second HW overlay plane on top of the
+    preview. SW control: CameraApp → Camera2 API → CameraHAL3 → V4L2 Driver → ISP;
+    Encode: MediaCodec FW → Codec2 HAL → MFC Driver → MFC;
+    Display: SurfaceFlinger → DRM/KMS → DPU.
   sw_thread: hal_kernel
   output_period_ms: 33.3      # 30fps — SW+HW combined output within this period
   budget_ms: 30.0
@@ -131,6 +133,12 @@ pipeline:
       comment: "MediaMuxer writes encoded bitstream to file via VFS/block layer"
 
     # ── HW layer: on-SoC ──────────────────────────────────────────────────────
+    - id: gpu
+      type: hw_ip
+      label: GPU
+      layer: hw
+      comment: "GPU composes CameraApp UI surfaces (viewfinder overlay, shutter button) via GLES; outputs ARGB8888 to ui_buf"
+
     - id: isp
       type: hw_ip
       label: ISP_0
@@ -151,6 +159,14 @@ pipeline:
       comment: "Display Processing Unit — HW overlay path. Rotation enabled (portrait recording). GPU composition is the risk variant."
 
     # ── Memory / Buffer layer ──────────────────────────────────────────────────
+    - id: ui_buf
+      type: buffer
+      label: "UI Buffer\nARGB8888 · 1920×1080"
+      layer: memory
+      compression: false
+      llc: true
+      comment: "GPU output: CameraApp UI layer (viewfinder overlay). ARGB8888 uncompressed. LLC-backed — DPU reads each scanout from LLC."
+
     - id: enc_buf
       type: buffer
       label: "Encode Buffer\nNV12 · 3840×2160"
@@ -244,6 +260,19 @@ pipeline:
       role: control
       branch_condition: "DPU register write: overlay config"
 
+    # ── GPU UI composition path: App + SF → GPU → ui_buf → DPU ──────────────
+    - id: e_app_gpu
+      source: camera_app
+      target: gpu
+      role: control
+      branch_condition: "GLES draw: viewfinder UI surfaces"
+
+    - id: e_sf_gpu
+      source: surfaceflinger
+      target: gpu
+      role: control
+      branch_condition: "GPU composition trigger (HWC decision)"
+
     # ══ Data path: HW buffer DMA transfers ═══════════════════════════════════
     - id: e_sensor_isp
       source: sensor
@@ -277,9 +306,22 @@ pipeline:
       source: bitstream
       target: storage_write
 
+    - id: e_gpu_ui
+      source: gpu
+      target: ui_buf
+      format: ARGB8888
+      resolution: "1920x1080"
+      fps: 30
+
     - id: e_preview_dpu
       source: preview_buf
       target: dpu
+      branch_condition: "DPU plane 0: camera preview"
+
+    - id: e_ui_dpu
+      source: ui_buf
+      target: dpu
+      branch_condition: "DPU plane 1: UI overlay (blended in DPU)"
 
     - id: e_dpu_display
       source: dpu

@@ -289,19 +289,34 @@ var cy = cytoscape({
   ],
 });
 
-// ── Fan-out separation: stagger taxi-turn for edges sharing the same source ──
-(function separateFanOutEdges() {
-  var srcMap = {};
-  cy.edges().forEach(function(e) {
-    var s = e.data('source');
-    if (!srcMap[s]) srcMap[s] = [];
-    srcMap[s].push(e);
+// ── Edge stagger: prevent overlapping taxi routes ─────────────────
+// Group edges by (source topological level → target topological level).
+// Edges in the same group share an identical horizontal path segment,
+// so we spread their taxi-turn values (20 %…80 %) to push the vertical
+// segment to different x positions.
+(function staggerEdgesByLevelPair() {
+  var X_STEP = 200;
+
+  // Determine topological level of each node from its preset x position
+  var nodeLevel = {};
+  cy.nodes().forEach(function(n) {
+    nodeLevel[n.id()] = Math.round(n.position('x') / X_STEP);
   });
-  Object.values(srcMap).forEach(function(edges) {
+
+  // Group by "srcLevel->tgtLevel"
+  var pairMap = {};
+  cy.edges().forEach(function(e) {
+    var key = nodeLevel[e.data('source')] + '->' + nodeLevel[e.data('target')];
+    if (!pairMap[key]) pairMap[key] = [];
+    pairMap[key].push(e);
+  });
+
+  Object.values(pairMap).forEach(function(edges) {
     if (edges.length < 2) return;
     var n = edges.length;
     edges.forEach(function(e, i) {
-      var turn = 30 + i * (40 / (n - 1));
+      // Spread turns evenly from 20 % to 80 %
+      var turn = 20 + i * (60 / (n - 1));
       e.style('taxi-turn', Math.round(turn) + '%');
     });
   });
