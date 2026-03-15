@@ -1,0 +1,295 @@
+From b8152a271ad807fdebfdd28348223935c42cf569 Mon Sep 17 00:00:00 2001
+From: YounghwanJoo <neokein@gmail.com>
+Date: Mon, 16 Mar 2026 00:15:02 +0900
+Subject: [PATCH] Add compact_pipeline YAML authoring syntax
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Introduces an optional compact_pipeline: key that replaces the
+verbose pipeline: section. A new pre-processor (schema/compact.py)
+expands the abbreviated form into the standard L1Pipeline dict
+before Pydantic validation, so all downstream code is unchanged.
+
+Compact rules:
+- nodes grouped by layer (app/framework/hal/kernel/hw/memory)
+  → type and sw_thread inferred automatically
+- node value: string → label; dict → label + any L1Node attrs
+  (external, compression, llc, rotation, comment)
+- control: chains of node IDs → consecutive role=control edges
+- data: lists or dicts with path + format/resolution/fps/fan_out
+  (extra attrs apply to first hop only)
+- edge IDs auto-generated as e_{src}_{tgt}; duplicate pairs deduped
+
+uhd30_recording_compact.yaml: same 20 nodes / 23 edges as the
+full version in ~65 lines (~80% reduction from 329 lines).
+---
+ .../usecase/uhd30_recording_compact.yaml      |  78 +++++++++
+ src/mmscenario/schema/compact.py              | 148 ++++++++++++++++++
+ src/mmscenario/schema/loader.py               |   3 +
+ 3 files changed, 229 insertions(+)
+ create mode 100644 scenarios/usecase/uhd30_recording_compact.yaml
+ create mode 100644 src/mmscenario/schema/compact.py
+
+diff --git a/scenarios/usecase/uhd30_recording_compact.yaml b/scenarios/usecase/uhd30_recording_compact.yaml
+new file mode 100644
+index 0000000..7c405e3
+--- /dev/null
++++ b/scenarios/usecase/uhd30_recording_compact.yaml
+@@ -0,0 +1,78 @@
++# UHD30 Video Recording — compact_pipeline 문법 예시
++# 동일 시나리오를 uhd30_recording.yaml(329줄) 대비 ~80% 압축
++#
++# L2 (IP Activity) → scenarios/traces/uhd30_recording/l2_ip_activity.yaml
++# L3 (Bus/Memory)  → scenarios/traces/uhd30_recording/l3_bus_memory.yaml
++
++scenario:
++  category: video_recording
++  name: UHD30 Video Recording
++  version: "0.3c"
++  description: >
++    Android camera pipeline recording UHD (3840×2160) video at 30 fps.
++    The ISP processes RAW sensor data via an M2M path (2-frame latency) and
++    fans out to two paths: an encode path (ISP→enc_buf→MFC→bitstream→storage)
++    and a preview path (ISP→preview_buf→DPU→display). CameraApp UI is
++    GPU-composited (ARGB8888 1920×1080) into ui_buf, blended by DPU as a
++    second HW overlay plane on top of the preview.
++  sw_thread: hal_kernel
++  output_period_ms: 33.3
++  budget_ms: 30.0
++  pipeline_latency_frames: 2
++  risks:
++    - severity: medium
++      description: "ISP M2M 2-frame latency: budget may be exceeded under memory pressure"
++    - severity: low
++      description: "GPU composition fallback (if DPU overlay unavailable) adds BW contention"
++  _review_flags: []
++
++compact_pipeline:
++  nodes:
++    app:
++      camera_app: "CameraApp"
++
++    framework:
++      camera2_api:   "Camera2 API"
++      mediacodec:    "MediaCodec FW"
++      surfaceflinger: "SurfaceFlinger"
++
++    hal:
++      camera_hal: "CameraHAL3"
++      codec_hal:  "Codec2 HAL"
++
++    kernel:
++      v4l2_driver:   "V4L2 Driver"
++      mfc_driver:    "MFC Driver"
++      drm_kms:       "DRM / KMS"
++      storage_write: "Storage Write"
++
++    hw:
++      sensor:  {label: "Camera Sensor",  external: true}
++      gpu:     "GPU"
++      isp:     "ISP_0"
++      mfc:     "MFC (H.265)"
++      dpu:     {label: "DPU", rotation: true}
++      display: {label: "Display Panel",  external: true}
++
++    memory:
++      ui_buf:      {label: "UI Buffer\nARGB8888 · 1920×1080",  compression: false, llc: true}
++      enc_buf:     {label: "Encode Buffer\nNV12 · 3840×2160",  compression: false, llc: false}
++      preview_buf: {label: "Preview Buffer\nNV12 · 1920×1080", compression: true,  llc: true}
++      bitstream:   {label: "Encoded Bitstream\n(H.265 / AV1)", compression: false, llc: false}
++
++  control:
++    - [camera_app,     camera2_api,    camera_hal, v4l2_driver,  isp]
++    - [camera2_api,    mediacodec,     codec_hal,  mfc_driver,   mfc]
++    - [camera2_api,    surfaceflinger, drm_kms,    dpu]
++    - [camera_app,     gpu]
++    - [surfaceflinger, gpu]
++
++  data:
++    - [sensor, isp]
++    - {path: [isp, enc_buf],     format: NV12,     resolution: "3840x2160", fps: 30, fan_out: true}
++    - {path: [isp, preview_buf], format: NV12,     resolution: "1920x1080", fps: 30}
++    - {path: [gpu, ui_buf],      format: ARGB8888, resolution: "1920x1080", fps: 30}
++    - [enc_buf, mfc, bitstream, storage_write]
++    - [preview_buf, dpu]
++    - [ui_buf, dpu]
++    - [dpu, display]
+diff --git a/src/mmscenario/schema/compact.py b/src/mmscenario/schema/compact.py
+new file mode 100644
+index 0000000..07fa863
+--- /dev/null
++++ b/src/mmscenario/schema/compact.py
+@@ -0,0 +1,148 @@
++"""Pre-processor: compact_pipeline syntax → standard pipeline dict.
++
++Compact format lets authors write scenarios in ~55 lines instead of ~330.
++The expand_compact() function converts the abbreviated form into the same
++dict structure that Pydantic's ScenarioFile.model_validate() expects, so
++all downstream code (validator, DAG, renderer) is completely unaffected.
++
++Compact format overview
++-----------------------
++compact_pipeline:
++  nodes:
++    <layer>:           # app | framework | hal | kernel | hw | memory
++      <id>: "Label"    # string → label only
++      <id>: {label: "Label", external: true, compression: false, ...}  # dict
++
++  control:             # SW drives HW — dotted purple edges
++    - [nodeA, nodeB, nodeC]   # consecutive pairs → control edges
++
++  data:                # DMA buffer transfers — solid edges
++    - [nodeA, nodeB]          # simple chain
++    - {path: [nodeA, nodeB], format: NV12, resolution: "3840x2160", fps: 30, fan_out: true}
++"""
++
++from __future__ import annotations
++
++# Layer name → (NodeTypeEnum value, sw_thread value or None)
++_LAYER_TO_TYPE: dict[str, tuple[str, str | None]] = {
++    "app":       ("sw_task", "app"),
++    "framework": ("sw_task", "framework"),
++    "hal":       ("sw_task", "hal_kernel"),
++    "kernel":    ("sw_task", "hal_kernel"),
++    "hw":        ("hw_ip",   None),
++    "memory":    ("buffer",  None),
++}
++
++# Edge attributes that are valid on L1Edge (forwarded from data path dicts)
++_EDGE_ATTRS = {"format", "resolution", "fps", "fan_out", "branch_condition"}
++
++
++def is_compact(data: dict) -> bool:
++    """Return True if the YAML dict uses compact_pipeline syntax."""
++    return "compact_pipeline" in data
++
++
++def expand_compact(data: dict) -> dict:
++    """Convert compact_pipeline → standard pipeline dict.
++
++    Returns a new dict with 'pipeline' key replacing 'compact_pipeline'.
++    All other top-level keys (scenario, ip_activity, bus_memory) are
++    preserved unchanged.
++    """
++    cp = data["compact_pipeline"]
++
++    node_registry: dict[str, dict] = {}  # id → L1Node dict (insertion-ordered)
++    edges: list[dict] = []
++    seen_pairs: set[tuple[str, str]] = set()  # (src, tgt) dedup
++
++    # ── 1. Build node registry ────────────────────────────────────────────────
++    for layer_name, nodes in (cp.get("nodes") or {}).items():
++        if layer_name not in _LAYER_TO_TYPE:
++            raise ValueError(
++                f"compact_pipeline.nodes: unknown layer '{layer_name}'. "
++                f"Valid layers: {list(_LAYER_TO_TYPE)}"
++            )
++        node_type, sw_thread = _LAYER_TO_TYPE[layer_name]
++
++        for node_id, value in (nodes or {}).items():
++            if node_id in node_registry:
++                continue  # first declaration wins
++
++            if isinstance(value, str):
++                attrs: dict = {"label": value}
++            elif isinstance(value, dict):
++                attrs = dict(value)
++            else:
++                attrs = {}
++
++            node: dict = {
++                "id": node_id,
++                "type": node_type,
++                "label": attrs.pop("label", _auto_label(node_id)),
++                "layer": layer_name,
++            }
++            if sw_thread is not None:
++                node["sw_thread"] = sw_thread
++            # Pass through any remaining attrs (external, compression, llc,
++            # rotation, comment, …) without modification
++            node.update(attrs)
++            node_registry[node_id] = node
++
++    # ── 2. Control chains ─────────────────────────────────────────────────────
++    for chain in (cp.get("control") or []):
++        for i in range(len(chain) - 1):
++            _add_edge(edges, seen_pairs, chain[i], chain[i + 1], "control")
++
++    # ── 3. Data paths ─────────────────────────────────────────────────────────
++    for item in (cp.get("data") or []):
++        if isinstance(item, list):
++            path: list[str] = item
++            extra: dict = {}
++        else:
++            path = list(item["path"])
++            extra = {k: v for k, v in item.items() if k in _EDGE_ATTRS}
++
++        for i in range(len(path) - 1):
++            # Format/resolution/fps/fan_out apply to the first hop only
++            hop_extra = extra if i == 0 else {}
++            _add_edge(edges, seen_pairs, path[i], path[i + 1], "data", **hop_extra)
++
++    # ── 4. Assemble result ────────────────────────────────────────────────────
++    result = {k: v for k, v in data.items() if k != "compact_pipeline"}
++    result["pipeline"] = {
++        "nodes": list(node_registry.values()),
++        "edges": edges,
++    }
++    return result
++
++
++# ── Helpers ───────────────────────────────────────────────────────────────────
++
++def _add_edge(
++    edges: list[dict],
++    seen: set[tuple[str, str]],
++    src: str,
++    tgt: str,
++    role: str,
++    **extra: object,
++) -> None:
++    """Append an edge dict, skipping duplicate (src, tgt) pairs."""
++    if (src, tgt) in seen:
++        return
++    seen.add((src, tgt))
++    edge: dict = {
++        "id": f"e_{src}_{tgt}",
++        "source": src,
++        "target": tgt,
++        "role": role,
++    }
++    edge.update(extra)
++    edges.append(edge)
++
++
++def _auto_label(node_id: str) -> str:
++    """Convert snake_case id to Title Case label as a fallback.
++
++    enc_buf → "Enc Buf",  v4l2_driver → "V4L2 Driver"
++    """
++    return " ".join(word.capitalize() for word in node_id.split("_"))
+diff --git a/src/mmscenario/schema/loader.py b/src/mmscenario/schema/loader.py
+index 79bff18..fec21e5 100644
+--- a/src/mmscenario/schema/loader.py
++++ b/src/mmscenario/schema/loader.py
+@@ -12,6 +12,7 @@ from pathlib import Path
+ 
+ from ruamel.yaml import YAML
+ 
++from .compact import expand_compact, is_compact
+ from .models import L2Activity, L3Memory, ScenarioFile
+ 
+ 
+@@ -25,6 +26,8 @@ def _yaml_load(path: Path) -> dict:
+ def load_scenario(path: Path) -> ScenarioFile:
+     """Load a usecase YAML (L0 + L1 only). ip_activity and bus_memory will be None."""
+     data = _yaml_load(path)
++    if is_compact(data):
++        data = expand_compact(data)
+     return ScenarioFile.model_validate(data)
+ 
+ 
+-- 
+2.50.1.windows.1
+
