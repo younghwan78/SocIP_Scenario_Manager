@@ -12,6 +12,7 @@ from pathlib import Path
 
 from ruamel.yaml import YAML
 
+from .compact import expand_compact, is_compact
 from .models import L2Activity, L3Memory, ScenarioFile
 
 
@@ -25,6 +26,8 @@ def _yaml_load(path: Path) -> dict:
 def load_scenario(path: Path) -> ScenarioFile:
     """Load a usecase YAML (L0 + L1 only). ip_activity and bus_memory will be None."""
     data = _yaml_load(path)
+    if is_compact(data):
+        data = expand_compact(data)
     return ScenarioFile.model_validate(data)
 
 
