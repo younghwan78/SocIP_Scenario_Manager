@@ -1,0 +1,596 @@
+From 78b565e69341bab3b6a5a534b3f8ad35ec588441 Mon Sep 17 00:00:00 2001
+From: YounghwanJoo <neokein@gmail.com>
+Date: Tue, 17 Mar 2026 23:58:09 +0900
+Subject: [PATCH] Add DPU composition panel; visual polish; split UI buffers
+ per DPU plane
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Visual improvements:
+- Move rotation (R) badge from DPU node to preview_buf (the buffer DPU rotates)
+- R badge positioned top-right; C/L badges top-left. All badges track node drag.
+- Layer background color bands (app/fw/hal/kernel/hw/memory) behind canvas nodes
+- Node drop shadow via Cytoscape shadow-* properties
+- Buffer nodes: barrel shape + vertical gradient for cylinder appearance
+
+DPU Composition panel (WinScope-style):
+- New schema: Size, Rect, DpuPlane, DpuComposition models in models.py
+- DpuComposition has display_id (links to pipeline node) + display_name
+- ScenarioFile.dpu_compositions: list — supports foldable/multi-display (display0, display1)
+- Clicking a display node shows miniature display preview + per-plane detail cards
+- Each plane card shows buffer, source_crop, display_frame, transform
+
+Buffer architecture fix:
+- Replace single ui_buf (1080x2340, full-screen) with dedicated per-plane buffers:
+  status_buf  (ARGB8888 1080x96)  — SystemUI: clock, battery → DPU plane 1
+  controls_buf(ARGB8888 1080x324) — CameraApp: shutter, mode switcher → DPU plane 2
+- Each DPU plane now maps 1:1 to a distinct pipeline buffer node
+- Update edges: gpu→status_buf, gpu→controls_buf, status_buf→dpu, controls_buf→dpu
+
+Code cleanup (simplify):
+- LAYER_BANDS and DPU_COMP_MAP moved to module scope (avoid per-event re-allocation)
+- DPU planes pre-sorted by z_order at init; showNodeDetail uses O(1) map lookup
+- createBadgeEl() helper removes badge DOM creation duplication
+- drawLaneDividers event registrations unified to cy.on('resize pan zoom', ...)
+- transform field: Literal type for compile-time validation
+- display_size uses Size(w,h) model; Rect(x,y,w,h) kept for source_crop/display_frame
+---
+ scenarios/usecase/uhd30_recording.yaml        |  88 ++++++--
+ .../usecase/uhd30_recording_compact.yaml      |  48 +++-
+ src/mmscenario/schema/models.py               |  39 ++++
+ src/mmscenario/view/templates/base.html.j2    | 207 ++++++++++++++++--
+ 4 files changed, 338 insertions(+), 44 deletions(-)
+
+diff --git a/scenarios/usecase/uhd30_recording.yaml b/scenarios/usecase/uhd30_recording.yaml
+index 9c3678a..5d3972c 100644
+--- a/scenarios/usecase/uhd30_recording.yaml
++++ b/scenarios/usecase/uhd30_recording.yaml
+@@ -155,17 +155,24 @@ pipeline:
+       type: hw_ip
+       label: DPU
+       layer: hw
+-      rotation: true
+-      comment: "Display Processing Unit — HW overlay path. Rotation enabled (portrait recording). GPU composition is the risk variant."
++      comment: "Display Processing Unit — HW overlay path. GPU composition is the risk variant."
+ 
+     # ── Memory / Buffer layer ──────────────────────────────────────────────────
+-    - id: ui_buf
++    - id: status_buf
++      type: buffer
++      label: "Status Bar\nARGB8888 · 1080×96"
++      layer: memory
++      compression: false
++      llc: true
++      comment: "SystemUI Surface: clock, battery, camera indicator. Small buffer, DPU reads repeatedly per scanout → LLC-backed."
++
++    - id: controls_buf
+       type: buffer
+-      label: "UI Buffer\nARGB8888 · 1920×1080"
++      label: "Camera Controls\nARGB8888 · 1080×324"
+       layer: memory
+       compression: false
+       llc: true
+-      comment: "GPU output: CameraApp UI layer (viewfinder overlay). ARGB8888 uncompressed. LLC-backed — DPU reads each scanout from LLC."
++      comment: "CameraApp UI Surface: shutter button, mode switcher, gallery thumbnail. Separate DPU plane from preview."
+ 
+     - id: enc_buf
+       type: buffer
+@@ -181,7 +188,8 @@ pipeline:
+       layer: memory
+       compression: true
+       llc: true
+-      comment: "ISP preview output → DPU. AFBC compressed (reduces BW ~40%). LLC enabled (DPU reads repeatedly per scanout)."
++      rotation: true
++      comment: "ISP preview output → DPU. AFBC compressed (reduces BW ~40%). LLC enabled (DPU reads repeatedly per scanout). DPU performs portrait rotation on this buffer."
+ 
+     - id: bitstream
+       type: buffer
+@@ -260,12 +268,12 @@ pipeline:
+       role: control
+       branch_condition: "DPU register write: overlay config"
+ 
+-    # ── GPU UI composition path: App + SF → GPU → ui_buf → DPU ──────────────
++    # ── GPU UI composition path: App → GPU → controls_buf / SF → GPU → status_buf ──
+     - id: e_app_gpu
+       source: camera_app
+       target: gpu
+       role: control
+-      branch_condition: "GLES draw: viewfinder UI surfaces"
++      branch_condition: "GLES draw: camera controls (shutter, mode switcher)"
+ 
+     - id: e_sf_gpu
+       source: surfaceflinger
+@@ -306,23 +314,73 @@ pipeline:
+       source: bitstream
+       target: storage_write
+ 
+-    - id: e_gpu_ui
++    - id: e_gpu_status
+       source: gpu
+-      target: ui_buf
++      target: status_buf
+       format: ARGB8888
+-      resolution: "1920x1080"
++      resolution: "1080x96"
++      fps: 30
++
++    - id: e_gpu_controls
++      source: gpu
++      target: controls_buf
++      format: ARGB8888
++      resolution: "1080x324"
+       fps: 30
+ 
+     - id: e_preview_dpu
+       source: preview_buf
+       target: dpu
+-      branch_condition: "DPU plane 0: camera preview"
++      branch_condition: "DPU plane 0: camera preview (ROT_90)"
+ 
+-    - id: e_ui_dpu
+-      source: ui_buf
++    - id: e_status_dpu
++      source: status_buf
+       target: dpu
+-      branch_condition: "DPU plane 1: UI overlay (blended in DPU)"
++      branch_condition: "DPU plane 1: status bar"
++
++    - id: e_controls_dpu
++      source: controls_buf
++      target: dpu
++      branch_condition: "DPU plane 2: camera controls"
+ 
+     - id: e_dpu_display
+       source: dpu
+       target: display
++
++# ── DPU composition: display layout for each HW overlay plane ─────────────
++# List enables multi-display scenarios (foldable: display0, display1).
++# display_id must match a pipeline node id.
++# source_crop:   region of source buffer DPU reads (pre-transform coordinates)
++# display_frame: destination on the physical display (post-transform coordinates)
++dpu_compositions:
++  - display_id: display
++    display_name: "Main Display (FHD+)"
++    display_size: {w: 1080, h: 2340}
++    planes:
++      - name: "Camera Preview"
++        buffer: preview_buf
++        # ISP outputs landscape 1920×1080; DPU rotates 90° CW → portrait 1080×1920.
++        # Placed below the status bar (y=96), occupies y=96–2016 (1920 px).
++        source_crop:   {x: 0, y:    0, w: 1920, h: 1080}
++        display_frame: {x: 0, y:   96, w: 1080, h: 1920}
++        transform: ROT_90
++        z_order: 0
++        plane_alpha: 1.0
++
++      - name: "Status Bar"
++        buffer: status_buf
++        # Dedicated 1080×96 SystemUI surface — DPU reads the full buffer.
++        source_crop:   {x: 0, y: 0, w: 1080, h:  96}
++        display_frame: {x: 0, y: 0, w: 1080, h:  96}
++        transform: NONE
++        z_order: 1
++        plane_alpha: 1.0
++
++      - name: "Camera Controls"
++        buffer: controls_buf
++        # Dedicated 1080×324 CameraApp surface — shutter, mode switcher, gallery.
++        source_crop:   {x: 0, y:    0, w: 1080, h: 324}
++        display_frame: {x: 0, y: 2016, w: 1080, h: 324}
++        transform: NONE
++        z_order: 2
++        plane_alpha: 1.0
+diff --git a/scenarios/usecase/uhd30_recording_compact.yaml b/scenarios/usecase/uhd30_recording_compact.yaml
+index 7c405e3..f099304 100644
+--- a/scenarios/usecase/uhd30_recording_compact.yaml
++++ b/scenarios/usecase/uhd30_recording_compact.yaml
+@@ -51,14 +51,15 @@ compact_pipeline:
+       gpu:     "GPU"
+       isp:     "ISP_0"
+       mfc:     "MFC (H.265)"
+-      dpu:     {label: "DPU", rotation: true}
++      dpu:     "DPU"
+       display: {label: "Display Panel",  external: true}
+ 
+     memory:
+-      ui_buf:      {label: "UI Buffer\nARGB8888 · 1920×1080",  compression: false, llc: true}
+-      enc_buf:     {label: "Encode Buffer\nNV12 · 3840×2160",  compression: false, llc: false}
+-      preview_buf: {label: "Preview Buffer\nNV12 · 1920×1080", compression: true,  llc: true}
+-      bitstream:   {label: "Encoded Bitstream\n(H.265 / AV1)", compression: false, llc: false}
++      status_buf:  {label: "Status Bar\nARGB8888 · 1080×96",      compression: false, llc: true}
++      controls_buf: {label: "Camera Controls\nARGB8888 · 1080×324", compression: false, llc: true}
++      enc_buf:     {label: "Encode Buffer\nNV12 · 3840×2160",      compression: false, llc: false}
++      preview_buf: {label: "Preview Buffer\nNV12 · 1920×1080",     compression: true,  llc: true, rotation: true}
++      bitstream:   {label: "Encoded Bitstream\n(H.265 / AV1)",     compression: false, llc: false}
+ 
+   control:
+     - [camera_app,     camera2_api,    camera_hal, v4l2_driver,  isp]
+@@ -69,10 +70,39 @@ compact_pipeline:
+ 
+   data:
+     - [sensor, isp]
+-    - {path: [isp, enc_buf],     format: NV12,     resolution: "3840x2160", fps: 30, fan_out: true}
+-    - {path: [isp, preview_buf], format: NV12,     resolution: "1920x1080", fps: 30}
+-    - {path: [gpu, ui_buf],      format: ARGB8888, resolution: "1920x1080", fps: 30}
++    - {path: [isp, enc_buf],      format: NV12,     resolution: "3840x2160", fps: 30, fan_out: true}
++    - {path: [isp, preview_buf],  format: NV12,     resolution: "1920x1080", fps: 30}
++    - {path: [gpu, status_buf],   format: ARGB8888, resolution: "1080x96",   fps: 30}
++    - {path: [gpu, controls_buf], format: ARGB8888, resolution: "1080x324",  fps: 30}
+     - [enc_buf, mfc, bitstream, storage_write]
+     - [preview_buf, dpu]
+-    - [ui_buf, dpu]
++    - [status_buf,   dpu]
++    - [controls_buf, dpu]
+     - [dpu, display]
++
++dpu_compositions:
++  - display_id: display
++    display_name: "Main Display (FHD+)"
++    display_size: {w: 1080, h: 2340}
++    planes:
++      - name: "Camera Preview"
++        buffer: preview_buf
++        source_crop:   {x: 0, y:    0, w: 1920, h: 1080}
++        display_frame: {x: 0, y:   96, w: 1080, h: 1920}
++        transform: ROT_90
++        z_order: 0
++        plane_alpha: 1.0
++      - name: "Status Bar"
++        buffer: status_buf
++        source_crop:   {x: 0, y: 0, w: 1080, h:  96}
++        display_frame: {x: 0, y: 0, w: 1080, h:  96}
++        transform: NONE
++        z_order: 1
++        plane_alpha: 1.0
++      - name: "Camera Controls"
++        buffer: controls_buf
++        source_crop:   {x: 0, y:    0, w: 1080, h: 324}
++        display_frame: {x: 0, y: 2016, w: 1080, h: 324}
++        transform: NONE
++        z_order: 2
++        plane_alpha: 1.0
+diff --git a/src/mmscenario/schema/models.py b/src/mmscenario/schema/models.py
+index fda8268..3e19275 100644
+--- a/src/mmscenario/schema/models.py
++++ b/src/mmscenario/schema/models.py
+@@ -165,6 +165,43 @@ class L3Memory(BaseModel):
+     bus_entries: list[L3BusEntry]
+ 
+ 
++# ---------------------------------------------------------------------------
++# DPU Composition (display layer layout)
++# ---------------------------------------------------------------------------
++
++class Size(BaseModel):
++    """Width × height only — used where origin is always (0, 0), e.g. display resolution."""
++    w: int
++    h: int
++
++
++class Rect(BaseModel):
++    """Positioned rectangle — used for source_crop and display_frame."""
++    x: int = 0
++    y: int = 0
++    w: int
++    h: int
++
++
++class DpuPlane(BaseModel):
++    name: str
++    buffer: str                  # references a pipeline node id
++    source_crop: Rect            # region of the source buffer to read (pre-transform)
++    display_frame: Rect          # destination rectangle on the physical display (post-transform)
++    transform: Literal[
++        "NONE", "ROT_90", "ROT_180", "ROT_270", "FLIP_H", "FLIP_V"
++    ] = "NONE"
++    z_order: int = 0            # lower = drawn first (background)
++    plane_alpha: float = 1.0
++
++
++class DpuComposition(BaseModel):
++    display_id: str = "display"          # must match a pipeline node id
++    display_name: Optional[str] = None  # human-readable name (e.g. "Main Display", "Cover Display")
++    display_size: Size                   # physical panel resolution
++    planes: list[DpuPlane]
++
++
+ # ---------------------------------------------------------------------------
+ # Top-level scenario file
+ # ---------------------------------------------------------------------------
+@@ -174,6 +211,8 @@ class ScenarioFile(BaseModel):
+     pipeline: L1Pipeline
+     ip_activity: Optional[L2Activity] = None
+     bus_memory: Optional[L3Memory] = None
++    dpu_compositions: list[DpuComposition] = Field(default_factory=list)
++    # ^ list enables foldable / multi-display scenarios (display0, display1, …)
+ 
+ 
+ # Loading functions live in schema/loader.py to keep this file model-only.
+diff --git a/src/mmscenario/view/templates/base.html.j2 b/src/mmscenario/view/templates/base.html.j2
+index 23a5891..29b271b 100644
+--- a/src/mmscenario/view/templates/base.html.j2
++++ b/src/mmscenario/view/templates/base.html.j2
+@@ -201,6 +201,27 @@ var SCENARIO   = {{ scenario | tojson }};
+ var LAYER_Y    = { app: 0, framework: 160, hal: 320, kernel: 480, hw: 680, memory: 860 };
+ var MODE       = "executive";
+ 
++// ── Layer background band definitions (module scope — static, never changes) ──
++// y1/y2 are model-space midpoints between adjacent LAYER_Y values.
++var LAYER_BANDS = [
++  { y1: -60,  y2:  80,  color: 'rgba(142,68,173,0.07)'  },  // app
++  { y1:  80,  y2: 240,  color: 'rgba(41,128,185,0.07)'  },  // framework
++  { y1: 240,  y2: 400,  color: 'rgba(22,160,133,0.07)'  },  // hal
++  { y1: 400,  y2: 580,  color: 'rgba(44,62,80,0.06)'    },  // kernel
++  { y1: 580,  y2: 770,  color: 'rgba(230,126,34,0.07)'  },  // hw
++  { y1: 770,  y2: 1060, color: 'rgba(39,174,96,0.07)'   },  // memory
++];
++
++// ── DPU composition lookup map (display_id → DpuComposition), built at load time ──
++var DPU_COMP_MAP = {};
++if (SCENARIO.dpu_compositions) {
++  SCENARIO.dpu_compositions.forEach(function(comp) {
++    // Pre-sort planes by z_order once here instead of on every click
++    comp.planes.sort(function(a, b) { return a.z_order - b.z_order; });
++    DPU_COMP_MAP[comp.display_id] = comp;
++  });
++}
++
+ // ── Cytoscape init ───────────────────────────────────────────────
+ var cy = cytoscape({
+   container: document.getElementById('cy'),
+@@ -223,16 +244,33 @@ var cy = cytoscape({
+         'text-max-width': '110px',
+         'border-width': 2,
+         'border-color': '#fff',
++        'shadow-blur': 7,
++        'shadow-color': '#222',
++        'shadow-offset-x': 2,
++        'shadow-offset-y': 3,
++        'shadow-opacity': 0.18,
+       }
+     },
+     {
+       selector: 'node[layer="memory"]',
+       style: {
+         'width': 100,
+-        'height': 36,
++        'height': 38,
+         'font-size': '10px',
+       }
+     },
++    // Cylinder gradient: lighter top → base color → darker bottom
++    {
++      selector: 'node[type="buffer"]',
++      style: {
++        'background-fill': 'linear-gradient',
++        'background-gradient-direction': 'to-bottom',
++        'background-gradient-stop-colors': '#52D68A #27AE60 #1A7A40',
++        'background-gradient-stop-positions': '0% 50% 100%',
++        'border-color': '#1A7A40',
++        'border-width': 1.5,
++      }
++    },
+     {
+       selector: 'edge',
+       style: {
+@@ -324,13 +362,33 @@ var cy = cytoscape({
+ 
+ // Draw layer lane lines as background overlay
+ drawLaneDividers();
+-cy.on('resize', drawLaneDividers);
++cy.on('resize pan zoom', drawLaneDividers);  // unified — was split across two registrations
+ 
+ function drawLaneDividers() {
+   document.querySelectorAll('.lane-overlay').forEach(function(el) { el.remove(); });
+   var container = document.getElementById('cy');
+   var containerH = container.clientHeight;
+ 
++  // ── Layer background color bands (LAYER_BANDS defined at module scope above) ──
++  LAYER_BANDS.forEach(function(band) {
++    var top    = cy.pan().y + band.y1 * cy.zoom();
++    var bottom = cy.pan().y + band.y2 * cy.zoom();
++    var visTop    = Math.max(0, top);
++    var visBottom = Math.min(containerH, bottom);
++    if (visBottom <= visTop) return;
++    var div = document.createElement('div');
++    div.className = 'lane-overlay';
++    div.style.cssText = [
++      'position:absolute', 'left:0', 'right:0',
++      'background:' + band.color,
++      'pointer-events:none',
++      'z-index:0',
++      'top:' + visTop + 'px',
++      'height:' + (visBottom - visTop) + 'px',
++    ].join(';');
++    container.appendChild(div);
++  });
++
+   // ── Horizontal lane separator lines ──────────────────────────
+   var separators = [
+     {y: 80,  style: '1px dashed #dde'},
+@@ -411,39 +469,50 @@ function drawLaneDividers() {
+     container.appendChild(note);
+   }
+ }
+-cy.on('pan zoom', drawLaneDividers);
+ 
+-// ── Node badges: C (compression) / L (LLC) / R (rotation) ────────
+-// Rendered as absolutely-positioned HTML overlays on top-left of each node.
+-var BADGE_DEFS = [
++// ── Node badges: C / L (top-left) · R (top-right) ────────────────
++// C / L: compression / LLC — left side of buffer nodes
++// R: rotation — right side of buffer nodes (indicates which buffer DPU rotates)
++var BADGE_DEFS_LEFT = [
+   { key: 'compression', text: 'C', color: '#2471a3', title: 'Compression (AFBC / SBWC)' },
+   { key: 'llc',         text: 'L', color: '#117a65', title: 'Last Level Cache (LLC)' },
+-  { key: 'rotation',    text: 'R', color: '#922b21', title: 'Rotation enabled' },
+ ];
++var BADGE_DEFS_RIGHT = [
++  { key: 'rotation', text: 'R', color: '#922b21', title: 'Rotation enabled (DPU rotates this buffer)' },
++];
++
++function createBadgeEl(badge, x, y) {
++  var el = document.createElement('div');
++  el.className = 'node-badge';
++  el.textContent = badge.text;
++  el.title = badge.title;
++  el.style.background = badge.color;
++  el.style.left = x + 'px';
++  el.style.top  = y + 'px';
++  return el;
++}
+ 
+ function drawNodeBadges() {
+   document.querySelectorAll('.node-badge').forEach(function(el) { el.remove(); });
+   var container = document.getElementById('cy');
+   cy.nodes().forEach(function(node) {
+-    var d = node.data();
+-    var active = BADGE_DEFS.filter(function(b) { return d[b.key] === true; });
+-    if (!active.length) return;
++    var d  = node.data();
+     var bb = node.renderedBoundingBox({ includeLabels: false });
+-    active.forEach(function(badge, i) {
+-      var el = document.createElement('div');
+-      el.className = 'node-badge';
+-      el.textContent = badge.text;
+-      el.title = badge.title;
+-      el.style.background = badge.color;
+-      el.style.left = (bb.x1 + 2 + i * 15) + 'px';
+-      el.style.top  = (bb.y1 + 2) + 'px';
+-      container.appendChild(el);
+-    });
++    var top = bb.y1 + 2;
++    BADGE_DEFS_LEFT.filter(function(b) { return d[b.key] === true; })
++      .forEach(function(badge, i) {
++        container.appendChild(createBadgeEl(badge, bb.x1 + 2 + i * 15, top));
++      });
++    BADGE_DEFS_RIGHT.filter(function(b) { return d[b.key] === true; })
++      .forEach(function(badge, i) {
++        container.appendChild(createBadgeEl(badge, bb.x2 - 15 - i * 15, top));
++      });
+   });
+ }
+ 
+ drawNodeBadges();
+ cy.on('pan zoom resize', drawNodeBadges);
++cy.on('drag', 'node', drawNodeBadges);
+ 
+ // ── Interactions ─────────────────────────────────────────────────
+ 
+@@ -510,6 +579,100 @@ function showScenarioOverview() {
+   if (bwSummary) panel.appendChild(bwSummary);
+ }
+ 
++// ── DPU Composition panel (WinScope-style layer layout) ──────────────────
++var PLANE_COLORS = [
++  { bg: 'rgba(41,128,185,0.55)',  border: '#2471a3' },  // blue  — preview
++  { bg: 'rgba(230,126,34,0.50)', border: '#ca6f1e' },  // orange — UI overlay
++  { bg: 'rgba(39,174,96,0.50)',  border: '#1e8449' },  // green  — 3rd layer
++  { bg: 'rgba(142,68,173,0.50)', border: '#7d3c98' },  // purple — 4th layer
++];
++
++function buildDpuCompositionHtml(comp) {
++  var ds   = comp.display_size;
++  var PREVIEW_W = 130;
++  var SCALE     = PREVIEW_W / ds.w;
++  var PREVIEW_H = Math.round(ds.h * SCALE);
++
++  var planes = comp.planes;  // pre-sorted by z_order at init (see DPU_COMP_MAP setup)
++
++  var html = '<div style="margin-top:14px;border-top:2px solid #e0e4ea;padding-top:12px">';
++  html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:2px">';
++  html += '<strong style="font-size:12px;color:#1a2a4a">DPU Composition</strong>';
++  html += '<span style="font-size:10px;color:#999">' + ds.w + ' × ' + ds.h + '</span>';
++  html += '</div>';
++  if (comp.display_name) {
++    html += '<div style="font-size:10px;color:#555;margin-bottom:8px">' + escHtml(comp.display_name) + '</div>';
++  }
++
++  html += '<div style="display:flex;gap:12px;align-items:flex-start">';
++
++  // ── Left: miniature display preview ──
++  html += '<div style="flex-shrink:0">';
++  html += '<div style="font-size:9px;color:#aaa;text-align:center;margin-bottom:2px">Display</div>';
++  html += '<div style="position:relative;width:' + PREVIEW_W + 'px;height:' + PREVIEW_H + 'px;';
++  html += 'background:#0d0d0d;border:1.5px solid #444;border-radius:4px;overflow:hidden">';
++
++  planes.forEach(function(plane, i) {
++    var c  = PLANE_COLORS[i % PLANE_COLORS.length];
++    var df = plane.display_frame;
++    var px = Math.round(df.x * SCALE);
++    var py = Math.round(df.y * SCALE);
++    var pw = Math.max(1, Math.round(df.w * SCALE));
++    var ph = Math.max(1, Math.round(df.h * SCALE));
++    html += '<div style="position:absolute;';
++    html += 'left:' + px + 'px;top:' + py + 'px;width:' + pw + 'px;height:' + ph + 'px;';
++    html += 'background:' + c.bg + ';box-sizing:border-box;border:1px solid ' + c.border + ';';
++    html += 'font-size:7px;color:#fff;overflow:hidden;padding:2px;" ';
++    html += 'title="' + escHtml(plane.name) + '">';
++    html += '<span style="opacity:0.9;white-space:nowrap">' + escHtml(plane.name) + '</span>';
++    html += '</div>';
++  });
++
++  // Guide lines for status bar (top) and controls (bottom) — only when >2 planes or standard layout
++  var statusH = Math.round(96 * SCALE);
++  html += '<div style="position:absolute;left:0;right:0;top:' + statusH + 'px;';
++  html += 'border-top:1px dashed rgba(255,255,255,0.2);pointer-events:none"></div>';
++
++  html += '</div>';  // end display box
++  // Screen labels
++  html += '<div style="display:flex;justify-content:space-between;font-size:8px;color:#aaa;margin-top:2px">';
++  html += '<span>x=0</span><span>x=' + ds.w + '</span></div>';
++  html += '</div>';  // end left
++
++  // ── Right: per-plane detail cards ──
++  html += '<div style="flex:1;min-width:0">';
++  planes.forEach(function(plane, i) {
++    var c  = PLANE_COLORS[i % PLANE_COLORS.length];
++    var df = plane.display_frame;
++    var sc = plane.source_crop;
++    html += '<div style="margin-bottom:10px;padding:6px 8px;border-radius:4px;';
++    html += 'border-left:3px solid ' + c.border + ';background:#f8f9fb">';
++    html += '<div style="font-size:11px;font-weight:600;color:#1a2a4a;margin-bottom:4px">';
++    html += '<span style="display:inline-block;width:8px;height:8px;border-radius:2px;';
++    html += 'background:' + c.bg + ';border:1px solid ' + c.border + ';margin-right:4px;vertical-align:middle"></span>';
++    html += escHtml(plane.name) + '</div>';
++
++    html += '<table style="width:100%;font-size:10px;border-collapse:collapse">';
++    html += '<tr><td style="color:#777;padding:1px 4px 1px 0;width:44%">buffer</td>';
++    html += '<td style="font-weight:600">' + escHtml(plane.buffer) + '</td></tr>';
++    html += '<tr><td style="color:#777;padding:1px 4px 1px 0">src crop</td>';
++    html += '<td>' + sc.x + ',' + sc.y + '&nbsp;&nbsp;' + sc.w + '×' + sc.h + '</td></tr>';
++    html += '<tr><td style="color:#777;padding:1px 4px 1px 0">dst frame</td>';
++    html += '<td>' + df.x + ',' + df.y + '&nbsp;&nbsp;' + df.w + '×' + df.h + '</td></tr>';
++    if (plane.transform && plane.transform !== 'NONE') {
++      html += '<tr><td style="color:#777;padding:1px 4px 1px 0">transform</td>';
++      html += '<td style="color:#c0392b;font-weight:600">' + escHtml(plane.transform) + '</td></tr>';
++    }
++    html += '</table>';
++    html += '</div>';
++  });
++  html += '</div>';  // end right
++
++  html += '</div>';  // end flex container
++  html += '</div>';  // end section
++  return html;
++}
++
+ function showNodeDetail(data) {
+   var html = '<h3>' + escHtml(data.label) + '</h3>';
+   html += '<table class="prop-table">';
+@@ -529,6 +692,10 @@ function showNodeDetail(data) {
+   if (data.comment) html += row('Comment', data.comment);
+   html += '</table>';
+ 
++  // DPU composition panel — O(1) lookup via DPU_COMP_MAP (keyed by display_id at init)
++  var dpuComp = DPU_COMP_MAP[data.id];
++  if (dpuComp) html += buildDpuCompositionHtml(dpuComp);
++
+   // IP activity detail — Architect mode only
+   if (MODE === 'architect') {
+     var ipInfo = getIPInfo(data.id);
+-- 
+2.50.1.windows.1
+
