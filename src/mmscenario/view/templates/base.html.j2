@@ -138,6 +138,9 @@
     </select>
   </span>
   {% endif %}
+  <button id="flow-btn" onclick="toggleDataFlow()"
+    style="margin-left:8px;padding:3px 10px;font-size:11px;border-radius:3px;border:1px solid #bbb;background:#f4f6f9;cursor:pointer;"
+    title="Animate data flow on data edges">&#9654; Flow</button>
   <span id="toolbar-mode-label" style="font-size:12px;color:#888;margin-left:8px;">
     Executive View — scenario overview &amp; risk summary
   </span>
@@ -306,6 +309,16 @@ var cy = cytoscape({
       }
     },
     {
+      selector: 'edge.flowing',
+      style: {
+        'line-style': 'dashed',
+        'line-dash-pattern': [10, 5],
+        'line-dash-offset': 0,
+        'width': 2.5,
+        'opacity': 1.0,
+      }
+    },
+    {
       selector: 'node[?external]',
       style: {
         'border-style': 'dashed',
@@ -359,6 +372,20 @@ var cy = cytoscape({
     });
   });
 })();
+
+// ── Color data edges by source node's layer ──────────────────────
+// Gives each data path a distinct color matching its producer IP's layer.
+// External nodes (sensor, display) use the EXTERNAL_COLOR gray.
+var LAYER_EDGE_COLOR = {
+  app: '#8e44ad', framework: '#2980b9', hal: '#16a085',
+  kernel: '#2c3e50', hw: '#c0622b', memory: '#1e8449',
+};
+cy.edges('[role="data"]').forEach(function(edge) {
+  var src = cy.getElementById(edge.data('source'));
+  var color = src.data('external') ? '#7f8c8d'
+            : (LAYER_EDGE_COLOR[src.data('layer')] || '#aab');
+  edge.style({ 'line-color': color, 'target-arrow-color': color });
+});
 
 // Draw layer lane lines as background overlay
 drawLaneDividers();
@@ -496,6 +523,7 @@ function drawNodeBadges() {
   document.querySelectorAll('.node-badge').forEach(function(el) { el.remove(); });
   var container = document.getElementById('cy');
   cy.nodes().forEach(function(node) {
+    if (node.style('display') === 'none') return;
     var d  = node.data();
     var bb = node.renderedBoundingBox({ includeLabels: false });
     var top = bb.y1 + 2;
@@ -759,6 +787,7 @@ function toggleLayer(btn) {
   var layer = btn.getAttribute('data-layer');
   btn.classList.toggle('active');
   cy.nodes('[layer="' + layer + '"]').style('display', btn.classList.contains('active') ? 'element' : 'none');
+  drawNodeBadges();
 }
 
 // ── Mode switch ──────────────────────────────────────────────────
@@ -812,6 +841,43 @@ function row(k, v) {
 }
 function escHtml(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ── Data flow animation ───────────────────────────────────────────
+// Animates line-dash-offset on all role="data" edges to show data flow.
+// Decreasing offset = pattern moves source→target direction.
+var _flowActive = false;
+var _flowRaf    = null;
+var _flowOffset = 0;
+
+function toggleDataFlow() {
+  _flowActive ? _stopDataFlow() : _startDataFlow();
+}
+
+function _startDataFlow() {
+  _flowActive = true;
+  document.getElementById('flow-btn').innerHTML = '&#9646;&#9646; Flow';
+  document.getElementById('flow-btn').style.background = '#e8f4e8';
+  cy.edges('[role="data"]').addClass('flowing');
+  _animateFlow();
+}
+
+function _stopDataFlow() {
+  _flowActive = false;
+  document.getElementById('flow-btn').innerHTML = '&#9654; Flow';
+  document.getElementById('flow-btn').style.background = '#f4f6f9';
+  if (_flowRaf) { cancelAnimationFrame(_flowRaf); _flowRaf = null; }
+  cy.edges('.flowing').removeClass('flowing');
+}
+
+function _animateFlow() {
+  _flowOffset -= 0.2;
+  if (_flowOffset < -1000) _flowOffset = 0;
+  var edges = cy.edges('.flowing');
+  cy.batch(function() {
+    edges.forEach(function(e) { e.style('line-dash-offset', _flowOffset); });
+  });
+  _flowRaf = requestAnimationFrame(_animateFlow);
 }
 
 // Fit graph on load; show executive overview by default
