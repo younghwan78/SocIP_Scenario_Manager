@@ -155,17 +155,24 @@ pipeline:
       type: hw_ip
       label: DPU
       layer: hw
-      rotation: true
-      comment: "Display Processing Unit — HW overlay path. Rotation enabled (portrait recording). GPU composition is the risk variant."
+      comment: "Display Processing Unit — HW overlay path. GPU composition is the risk variant."
 
     # ── Memory / Buffer layer ──────────────────────────────────────────────────
-    - id: ui_buf
+    - id: status_buf
       type: buffer
-      label: "UI Buffer\nARGB8888 · 1920×1080"
+      label: "Status Bar\nARGB8888 · 1080×96"
       layer: memory
       compression: false
       llc: true
-      comment: "GPU output: CameraApp UI layer (viewfinder overlay). ARGB8888 uncompressed. LLC-backed — DPU reads each scanout from LLC."
+      comment: "SystemUI Surface: clock, battery, camera indicator. Small buffer, DPU reads repeatedly per scanout → LLC-backed."
+
+    - id: controls_buf
+      type: buffer
+      label: "Camera Controls\nARGB8888 · 1080×324"
+      layer: memory
+      compression: false
+      llc: true
+      comment: "CameraApp UI Surface: shutter button, mode switcher, gallery thumbnail. Separate DPU plane from preview."
 
     - id: enc_buf
       type: buffer
@@ -181,7 +188,8 @@ pipeline:
       layer: memory
       compression: true
       llc: true
-      comment: "ISP preview output → DPU. AFBC compressed (reduces BW ~40%). LLC enabled (DPU reads repeatedly per scanout)."
+      rotation: true
+      comment: "ISP preview output → DPU. AFBC compressed (reduces BW ~40%). LLC enabled (DPU reads repeatedly per scanout). DPU performs portrait rotation on this buffer."
 
     - id: bitstream
       type: buffer
@@ -260,12 +268,12 @@ pipeline:
       role: control
       branch_condition: "DPU register write: overlay config"
 
-    # ── GPU UI composition path: App + SF → GPU → ui_buf → DPU ──────────────
+    # ── GPU UI composition path: App → GPU → controls_buf / SF → GPU → status_buf ──
     - id: e_app_gpu
       source: camera_app
       target: gpu
       role: control
-      branch_condition: "GLES draw: viewfinder UI surfaces"
+      branch_condition: "GLES draw: camera controls (shutter, mode switcher)"
 
     - id: e_sf_gpu
       source: surfaceflinger
@@ -306,23 +314,73 @@ pipeline:
       source: bitstream
       target: storage_write
 
-    - id: e_gpu_ui
+    - id: e_gpu_status
       source: gpu
-      target: ui_buf
+      target: status_buf
       format: ARGB8888
-      resolution: "1920x1080"
+      resolution: "1080x96"
+      fps: 30
+
+    - id: e_gpu_controls
+      source: gpu
+      target: controls_buf
+      format: ARGB8888
+      resolution: "1080x324"
       fps: 30
 
     - id: e_preview_dpu
       source: preview_buf
       target: dpu
-      branch_condition: "DPU plane 0: camera preview"
+      branch_condition: "DPU plane 0: camera preview (ROT_90)"
 
-    - id: e_ui_dpu
-      source: ui_buf
+    - id: e_status_dpu
+      source: status_buf
       target: dpu
-      branch_condition: "DPU plane 1: UI overlay (blended in DPU)"
+      branch_condition: "DPU plane 1: status bar"
+
+    - id: e_controls_dpu
+      source: controls_buf
+      target: dpu
+      branch_condition: "DPU plane 2: camera controls"
 
     - id: e_dpu_display
       source: dpu
       target: display
+
+# ── DPU composition: display layout for each HW overlay plane ─────────────
+# List enables multi-display scenarios (foldable: display0, display1).
+# display_id must match a pipeline node id.
+# source_crop:   region of source buffer DPU reads (pre-transform coordinates)
+# display_frame: destination on the physical display (post-transform coordinates)
+dpu_compositions:
+  - display_id: display
+    display_name: "Main Display (FHD+)"
+    display_size: {w: 1080, h: 2340}
+    planes:
+      - name: "Camera Preview"
+        buffer: preview_buf
+        # ISP outputs landscape 1920×1080; DPU rotates 90° CW → portrait 1080×1920.
+        # Placed below the status bar (y=96), occupies y=96–2016 (1920 px).
+        source_crop:   {x: 0, y:    0, w: 1920, h: 1080}
+        display_frame: {x: 0, y:   96, w: 1080, h: 1920}
+        transform: ROT_90
+        z_order: 0
+        plane_alpha: 1.0
+
+      - name: "Status Bar"
+        buffer: status_buf
+        # Dedicated 1080×96 SystemUI surface — DPU reads the full buffer.
+        source_crop:   {x: 0, y: 0, w: 1080, h:  96}
+        display_frame: {x: 0, y: 0, w: 1080, h:  96}
+        transform: NONE
+        z_order: 1
+        plane_alpha: 1.0
+
+      - name: "Camera Controls"
+        buffer: controls_buf
+        # Dedicated 1080×324 CameraApp surface — shutter, mode switcher, gallery.
+        source_crop:   {x: 0, y:    0, w: 1080, h: 324}
+        display_frame: {x: 0, y: 2016, w: 1080, h: 324}
+        transform: NONE
+        z_order: 2
+        plane_alpha: 1.0

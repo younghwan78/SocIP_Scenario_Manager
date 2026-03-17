@@ -51,14 +51,15 @@ compact_pipeline:
       gpu:     "GPU"
       isp:     "ISP_0"
       mfc:     "MFC (H.265)"
-      dpu:     {label: "DPU", rotation: true}
+      dpu:     "DPU"
       display: {label: "Display Panel",  external: true}
 
     memory:
-      ui_buf:      {label: "UI Buffer\nARGB8888 · 1920×1080",  compression: false, llc: true}
-      enc_buf:     {label: "Encode Buffer\nNV12 · 3840×2160",  compression: false, llc: false}
-      preview_buf: {label: "Preview Buffer\nNV12 · 1920×1080", compression: true,  llc: true}
-      bitstream:   {label: "Encoded Bitstream\n(H.265 / AV1)", compression: false, llc: false}
+      status_buf:  {label: "Status Bar\nARGB8888 · 1080×96",      compression: false, llc: true}
+      controls_buf: {label: "Camera Controls\nARGB8888 · 1080×324", compression: false, llc: true}
+      enc_buf:     {label: "Encode Buffer\nNV12 · 3840×2160",      compression: false, llc: false}
+      preview_buf: {label: "Preview Buffer\nNV12 · 1920×1080",     compression: true,  llc: true, rotation: true}
+      bitstream:   {label: "Encoded Bitstream\n(H.265 / AV1)",     compression: false, llc: false}
 
   control:
     - [camera_app,     camera2_api,    camera_hal, v4l2_driver,  isp]
@@ -69,10 +70,39 @@ compact_pipeline:
 
   data:
     - [sensor, isp]
-    - {path: [isp, enc_buf],     format: NV12,     resolution: "3840x2160", fps: 30, fan_out: true}
-    - {path: [isp, preview_buf], format: NV12,     resolution: "1920x1080", fps: 30}
-    - {path: [gpu, ui_buf],      format: ARGB8888, resolution: "1920x1080", fps: 30}
+    - {path: [isp, enc_buf],      format: NV12,     resolution: "3840x2160", fps: 30, fan_out: true}
+    - {path: [isp, preview_buf],  format: NV12,     resolution: "1920x1080", fps: 30}
+    - {path: [gpu, status_buf],   format: ARGB8888, resolution: "1080x96",   fps: 30}
+    - {path: [gpu, controls_buf], format: ARGB8888, resolution: "1080x324",  fps: 30}
     - [enc_buf, mfc, bitstream, storage_write]
     - [preview_buf, dpu]
-    - [ui_buf, dpu]
+    - [status_buf,   dpu]
+    - [controls_buf, dpu]
     - [dpu, display]
+
+dpu_compositions:
+  - display_id: display
+    display_name: "Main Display (FHD+)"
+    display_size: {w: 1080, h: 2340}
+    planes:
+      - name: "Camera Preview"
+        buffer: preview_buf
+        source_crop:   {x: 0, y:    0, w: 1920, h: 1080}
+        display_frame: {x: 0, y:   96, w: 1080, h: 1920}
+        transform: ROT_90
+        z_order: 0
+        plane_alpha: 1.0
+      - name: "Status Bar"
+        buffer: status_buf
+        source_crop:   {x: 0, y: 0, w: 1080, h:  96}
+        display_frame: {x: 0, y: 0, w: 1080, h:  96}
+        transform: NONE
+        z_order: 1
+        plane_alpha: 1.0
+      - name: "Camera Controls"
+        buffer: controls_buf
+        source_crop:   {x: 0, y:    0, w: 1080, h: 324}
+        display_frame: {x: 0, y: 2016, w: 1080, h: 324}
+        transform: NONE
+        z_order: 2
+        plane_alpha: 1.0

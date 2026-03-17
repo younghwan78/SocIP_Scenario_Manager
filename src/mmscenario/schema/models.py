@@ -166,6 +166,43 @@ class L3Memory(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# DPU Composition (display layer layout)
+# ---------------------------------------------------------------------------
+
+class Size(BaseModel):
+    """Width × height only — used where origin is always (0, 0), e.g. display resolution."""
+    w: int
+    h: int
+
+
+class Rect(BaseModel):
+    """Positioned rectangle — used for source_crop and display_frame."""
+    x: int = 0
+    y: int = 0
+    w: int
+    h: int
+
+
+class DpuPlane(BaseModel):
+    name: str
+    buffer: str                  # references a pipeline node id
+    source_crop: Rect            # region of the source buffer to read (pre-transform)
+    display_frame: Rect          # destination rectangle on the physical display (post-transform)
+    transform: Literal[
+        "NONE", "ROT_90", "ROT_180", "ROT_270", "FLIP_H", "FLIP_V"
+    ] = "NONE"
+    z_order: int = 0            # lower = drawn first (background)
+    plane_alpha: float = 1.0
+
+
+class DpuComposition(BaseModel):
+    display_id: str = "display"          # must match a pipeline node id
+    display_name: Optional[str] = None  # human-readable name (e.g. "Main Display", "Cover Display")
+    display_size: Size                   # physical panel resolution
+    planes: list[DpuPlane]
+
+
+# ---------------------------------------------------------------------------
 # Top-level scenario file
 # ---------------------------------------------------------------------------
 
@@ -174,6 +211,8 @@ class ScenarioFile(BaseModel):
     pipeline: L1Pipeline
     ip_activity: Optional[L2Activity] = None
     bus_memory: Optional[L3Memory] = None
+    dpu_compositions: list[DpuComposition] = Field(default_factory=list)
+    # ^ list enables foldable / multi-display scenarios (display0, display1, …)
 
 
 # Loading functions live in schema/loader.py to keep this file model-only.
