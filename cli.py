@@ -125,6 +125,17 @@ def cmd_parse_trace(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_build_site(args: argparse.Namespace) -> int:
+    from mmscenario.view.site import build_site
+
+    return build_site(
+        usecase_dir=Path(args.usecase_dir),
+        output_dir=Path(args.output),
+        static_dir=Path(args.static_dir),
+        include_all=args.include_all,
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="mmscenario", description="Multimedia Scenario DB CLI")
     sub = p.add_subparsers(dest="command", required=True)
@@ -138,6 +149,17 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("yaml_path", help="Path to scenario YAML")
     r.add_argument("--output", help="Output HTML path (default: output/<scenario-name>.html)")
     r.add_argument("--static-dir", default="static", help="Directory containing cytoscape.min.js")
+
+    # build-site
+    bs = sub.add_parser("build-site", help="Build GitHub Pages site from all scenarios")
+    bs.add_argument("--usecase-dir",  default="scenarios/usecase",
+                    help="Root directory to scan for scenario YAML files (default: scenarios/usecase)")
+    bs.add_argument("--output",       default="docs",
+                    help="Output directory for generated site (default: docs)")
+    bs.add_argument("--static-dir",   default="static",
+                    help="Directory containing cytoscape.min.js (default: static)")
+    bs.add_argument("--include-all",  action="store_true",
+                    help="Include _compact and draft_ files (excluded by default)")
 
     # parse-trace
     pt = sub.add_parser("parse-trace", help="Parse Perfetto trace → detect components → draft YAML")
@@ -156,6 +178,7 @@ def main() -> None:
     handlers = {
         "validate":    cmd_validate,
         "render":      cmd_render,
+        "build-site":  cmd_build_site,
         "parse-trace": cmd_parse_trace,
     }
     sys.exit(handlers[args.command](args))
