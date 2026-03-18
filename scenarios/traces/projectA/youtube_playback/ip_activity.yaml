@@ -1,0 +1,56 @@
+# IP Activity DB — YouTube Playback (Galaxy Exynos)
+# Streaming decode: ExoPlayer → MFC (AV1/VP9) → DPU
+# YouTube primarily uses AV1 for UHD content; VP9 for FHD fallback
+ip_instances:
+  - id: MFC
+    default:
+      freq_mhz: 200
+      power_mA: 75
+      bw_read_gbps: 0.5     # VP9/AV1 FHD30: low bitrate → low BW
+      bw_write_gbps: 0.4
+      exec_time_ms: 4.5
+      source: estimated
+    modes:
+      - id: AV1_UHD30
+        condition: "AV1 UHD30 (YouTube primary)"
+        freq_mhz: 400
+        power_mA: 160
+        bw_read_gbps: 1.8
+        bw_write_gbps: 1.0
+        exec_time_ms: 5.0
+        source: estimated
+      - id: AV1_8K30
+        condition: "AV1 8K30"
+        freq_mhz: 800
+        power_mA: 340
+        bw_read_gbps: 7.0
+        bw_write_gbps: 4.5
+        exec_time_ms: 5.5
+        source: estimated
+
+  - id: DPU
+    default:
+      freq_mhz: 200
+      power_mA: 55
+      bw_read_gbps: 1.0
+      bw_write_gbps: 0.0
+      exec_time_ms: 1.0
+      source: estimated
+    modes:
+      - id: UHD30
+        condition: "UHD30 display"
+        freq_mhz: 300
+        power_mA: 90
+        bw_read_gbps: 2.0
+        bw_write_gbps: 0.0
+        exec_time_ms: 0.5
+        source: estimated
+
+  - id: GPU
+    default:
+      freq_mhz: 250
+      power_mA: 80
+      bw_read_gbps: 0.5     # YouTube UI overlay composition
+      bw_write_gbps: 0.5
+      exec_time_ms: 3.0
+      source: estimated

@@ -1,0 +1,122 @@
+# IP Activity DB — Video Recording (Galaxy Exynos)
+# Unified L2+L3: freq / power / BW / exec_time per IP, per mode
+# source: estimated (based on Exynos datasheet + internal analysis)
+ip_instances:
+  - id: ISP_0
+    default:
+      freq_mhz: 400
+      power_mA: 180
+      bw_read_gbps: 2.0     # RAW12 FHD30: 1920×1080×30×1.5B = ~0.9 GB/s (sensor) + ref frames
+      bw_write_gbps: 1.5    # NV12 FHD30 output
+      exec_time_ms: 8.3     # ~25% of 33ms frame period
+      source: estimated
+    modes:
+      - id: UHD30
+        condition: "UHD 30fps (3840×2160)"
+        freq_mhz: 533
+        power_mA: 250
+        bw_read_gbps: 4.2   # RAW12 UHD30: 3840×2160×30×1.5B = ~3.6 GB/s
+        bw_write_gbps: 2.8
+        exec_time_ms: 5.0
+        source: estimated
+      - id: FHD60
+        condition: "FHD 60fps (1920×1080)"
+        freq_mhz: 533
+        power_mA: 220
+        bw_read_gbps: 3.6
+        bw_write_gbps: 2.4
+        exec_time_ms: 4.2
+        source: estimated
+      - id: UHD60
+        condition: "UHD 60fps (3840×2160)"
+        freq_mhz: 800
+        power_mA: 380
+        bw_read_gbps: 8.4
+        bw_write_gbps: 5.6
+        exec_time_ms: 3.0
+        source: estimated
+      - id: 8K30
+        condition: "8K 30fps (7680×4320)"
+        freq_mhz: 1000
+        power_mA: 500
+        bw_read_gbps: 16.0
+        bw_write_gbps: 10.0
+        exec_time_ms: 2.5
+        source: estimated
+
+  - id: MFC
+    default:
+      freq_mhz: 200
+      power_mA: 80
+      bw_read_gbps: 0.8     # NV12 FHD30 encode input + ref frames
+      bw_write_gbps: 0.5
+      exec_time_ms: 5.0
+      source: estimated
+    modes:
+      - id: H265_UHD30
+        condition: "H.265 UHD30"
+        freq_mhz: 333
+        power_mA: 140
+        bw_read_gbps: 1.5
+        bw_write_gbps: 0.8
+        exec_time_ms: 4.0
+        source: estimated
+      - id: H265_FHD60
+        condition: "H.265 FHD60"
+        freq_mhz: 400
+        power_mA: 160
+        bw_read_gbps: 1.6
+        bw_write_gbps: 1.0
+        exec_time_ms: 2.5
+        source: estimated
+      - id: H265_UHD60
+        condition: "H.265 UHD60"
+        freq_mhz: 666
+        power_mA: 260
+        bw_read_gbps: 3.2
+        bw_write_gbps: 1.8
+        exec_time_ms: 2.0
+        source: estimated
+      - id: AV1_UHD30
+        condition: "AV1 UHD30"
+        freq_mhz: 533
+        power_mA: 200
+        bw_read_gbps: 2.0
+        bw_write_gbps: 1.0
+        exec_time_ms: 5.0
+        source: estimated
+      - id: H265_8K30
+        condition: "H.265 8K30"
+        freq_mhz: 1000
+        power_mA: 400
+        bw_read_gbps: 8.0
+        bw_write_gbps: 4.0
+        exec_time_ms: 3.0
+        source: estimated
+
+  - id: DPU
+    default:
+      freq_mhz: 200
+      power_mA: 60
+      bw_read_gbps: 1.2     # 3 planes × FHD+ read
+      bw_write_gbps: 0.0
+      exec_time_ms: 1.0
+      source: estimated
+    modes:
+      - id: UHD_input
+        condition: "UHD preview input"
+        freq_mhz: 300
+        power_mA: 100
+        bw_read_gbps: 2.4
+        bw_write_gbps: 0.0
+        exec_time_ms: 0.5
+        source: estimated
+
+  - id: GPU
+    default:
+      freq_mhz: 300
+      power_mA: 100
+      bw_read_gbps: 0.5     # UI buffer composition (status + controls)
+      bw_write_gbps: 0.5
+      exec_time_ms: 3.0
+      source: estimated

@@ -1,0 +1,71 @@
+# IP Activity DB — Video Playback (Galaxy Exynos)
+# Local video decode: MediaCodec → MFC (H.265/AV1 decode) → DPU
+ip_instances:
+  - id: MFC
+    default:
+      freq_mhz: 200
+      power_mA: 70
+      bw_read_gbps: 0.6     # H.265 FHD30 decode: bitstream + ref frames
+      bw_write_gbps: 0.4
+      exec_time_ms: 4.0
+      source: estimated
+    modes:
+      - id: H265_UHD30
+        condition: "H.265 UHD30 decode"
+        freq_mhz: 333
+        power_mA: 130
+        bw_read_gbps: 1.4
+        bw_write_gbps: 0.8
+        exec_time_ms: 3.5
+        source: estimated
+      - id: AV1_UHD30
+        condition: "AV1 UHD30 decode"
+        freq_mhz: 400
+        power_mA: 160
+        bw_read_gbps: 1.8
+        bw_write_gbps: 1.0
+        exec_time_ms: 5.0
+        source: estimated
+      - id: H265_8K30
+        condition: "H.265 8K30 decode"
+        freq_mhz: 800
+        power_mA: 320
+        bw_read_gbps: 6.0
+        bw_write_gbps: 4.0
+        exec_time_ms: 4.0
+        source: estimated
+
+  - id: DPU
+    default:
+      freq_mhz: 200
+      power_mA: 55
+      bw_read_gbps: 1.0
+      bw_write_gbps: 0.0
+      exec_time_ms: 1.0
+      source: estimated
+    modes:
+      - id: UHD30
+        condition: "UHD30 display"
+        freq_mhz: 300
+        power_mA: 90
+        bw_read_gbps: 2.0
+        bw_write_gbps: 0.0
+        exec_time_ms: 0.5
+        source: estimated
+      - id: 8K30
+        condition: "8K30 display (downscale)"
+        freq_mhz: 600
+        power_mA: 200
+        bw_read_gbps: 8.0
+        bw_write_gbps: 0.0
+        exec_time_ms: 0.3
+        source: estimated
+
+  - id: GPU
+    default:
+      freq_mhz: 200
+      power_mA: 60
+      bw_read_gbps: 0.4
+      bw_write_gbps: 0.4
+      exec_time_ms: 2.0
+      source: estimated

@@ -1,7 +1,7 @@
 """GitHub Pages static site builder.
 
-Scans scenarios/usecase/**/*.yaml, renders each to docs/scenarios/...,
-and generates docs/index.html with project/scenario navigation.
+Scans scenarios/usecase/**/*.yaml, renders each scenario (and all its variants)
+to docs/scenarios/..., and generates docs/index.html with project/scenario navigation.
 """
 
 from __future__ import annotations
@@ -12,7 +12,6 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# Files to skip by default (authoring artifacts, not final scenarios)
 _SKIP_SUFFIXES = ("_compact",)
 _SKIP_PREFIXES = ("draft_",)
 
@@ -23,11 +22,7 @@ def build_site(
     static_dir: Path,
     include_all: bool = False,
 ) -> int:
-    """Scan usecase_dir, render all scenarios, generate index.html.
-
-    Returns exit code (0 = success, 1 = partial failure).
-    """
-    from mmscenario.dag import ScenarioPipeline
+    """Scan usecase_dir, render all scenarios (+variants), generate index.html."""
     from mmscenario.schema import load_full_scenario
     from mmscenario.view import ViewRenderer
     from mmscenario.view.renderer import slugify
@@ -61,17 +56,23 @@ def build_site(
             continue
 
         sc = scenario.scenario
-        scenario_slug = slugify(sc.name)
+        base_slug = slugify(sc.name)
 
         if project_id == "__root__":
-            html_rel = f"scenarios/{scenario_slug}.html"
+            html_subdir  = output_dir / "scenarios"
+            html_rel_dir = "scenarios"
         else:
-            html_rel = f"scenarios/{project_id}/{scenario_slug}.html"
+            html_subdir  = output_dir / "scenarios" / project_id
+            html_rel_dir = f"scenarios/{project_id}"
 
-        html_path = output_dir / html_rel
-        pipeline = ScenarioPipeline(scenario.pipeline)
-        renderer.render(scenario, pipeline, output_path=html_path)
-        logger.info("  rendered: %s → %s", yaml_path.name, html_rel)
+        # Render all variants (or base if no variants)
+        variant_manifest = renderer.render_all_variants(
+            scenario,
+            output_dir=html_subdir,
+            base_slug=base_slug,
+            variant_html_dir=html_rel_dir,
+        )
+        logger.info("  rendered: %s → %d page(s)", yaml_path.name, len(variant_manifest))
 
         if project_id not in projects:
             projects[project_id] = {
@@ -79,9 +80,10 @@ def build_site(
                 "name":      project_name,
                 "scenarios": [],
             }
+
         desc = (sc.description or "").strip()
         projects[project_id]["scenarios"].append({
-            "id":          scenario_slug,
+            "id":          base_slug,
             "name":        sc.name,
             "category":    sc.category,
             "version":     sc.version,
@@ -90,7 +92,9 @@ def build_site(
                 {"severity": r.severity.value, "description": r.description}
                 for r in sc.risks
             ],
-            "html_path":   html_rel,
+            # html_path = first variant (or base)
+            "html_path":   variant_manifest[0]["html_path"],
+            "variants":    variant_manifest if len(variant_manifest) > 1 else [],
         })
 
     # Build ordered project list: __root__ first, then alphabetical
@@ -102,12 +106,14 @@ def build_site(
 
     manifest = {"projects": project_list}
     index_html = _build_index_html(manifest)
-    index_path = output_dir / "index.html"
-    index_path.write_text(index_html, encoding="utf-8")
+    (output_dir / "index.html").write_text(index_html, encoding="utf-8")
 
-    total = sum(len(p["scenarios"]) for p in project_list)
-    logger.info("Site built: %d scenario(s) across %d project(s) → %s",
-                total, len(project_list), output_dir.resolve())
+    total_pages = sum(
+        len(s["variants"]) or 1
+        for p in project_list for s in p["scenarios"]
+    )
+    logger.info("Site built: %d page(s) across %d project(s) → %s",
+                total_pages, len(project_list), output_dir.resolve())
     if errors:
         logger.warning("Skipped %d file(s): %s", len(errors), ", ".join(errors))
     return 0 if not errors else 1
@@ -119,7 +125,10 @@ def build_site(
 
 def _build_index_html(manifest: dict) -> str:
     manifest_json = json.dumps(manifest, ensure_ascii=False, indent=2)
-    total = sum(len(p["scenarios"]) for p in manifest["projects"])
+    total = sum(
+        max(len(s["variants"]), 1)
+        for p in manifest["projects"] for s in p["scenarios"]
+    )
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -132,7 +141,6 @@ def _build_index_html(manifest: dict) -> str:
 body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
   background:#f0f2f5;color:#1a2a4a;min-height:100vh;display:flex;flex-direction:column}}
 
-/* ── Header ── */
 header{{background:linear-gradient(135deg,#1a2a4a 0%,#2a3f6a 100%);
   color:#fff;padding:18px 28px;display:flex;align-items:center;gap:16px;
   box-shadow:0 2px 8px rgba(0,0,0,0.25)}}
@@ -143,10 +151,8 @@ header a{{color:#a8c0e8;font-size:12px;text-decoration:none;
   border:1px solid rgba(168,192,232,0.4);border-radius:4px;padding:4px 10px}}
 header a:hover{{background:rgba(255,255,255,0.1)}}
 
-/* ── Layout ── */
 .layout{{display:flex;flex:1;min-height:0}}
 
-/* ── Sidebar ── */
 .sidebar{{width:220px;min-width:180px;background:#fff;
   border-right:1px solid #dde3ec;padding:16px 12px;
   display:flex;flex-direction:column;gap:4px;overflow-y:auto}}
@@ -162,18 +168,15 @@ header a:hover{{background:rgba(255,255,255,0.1)}}
   border-radius:10px;padding:1px 7px;min-width:22px;text-align:center}}
 .proj-btn.active .count{{background:#d6eaf8;color:#1a6fa8}}
 
-/* ── Main content ── */
 .content{{flex:1;padding:24px 28px;overflow-y:auto}}
 .content-header{{margin-bottom:20px}}
 .content-header h2{{font-size:18px;font-weight:700;color:#1a2a4a}}
 .content-header .hint{{font-size:12px;color:#888;margin-top:3px}}
-.scenario-grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));
-  gap:16px}}
+.scenario-grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:16px}}
 
-/* ── Scenario card ── */
 .card{{background:#fff;border-radius:10px;border:1px solid #dde3ec;
   padding:18px 20px;display:flex;flex-direction:column;gap:10px;
-  transition:box-shadow 0.15s,transform 0.15s;cursor:pointer;text-decoration:none;color:inherit}}
+  transition:box-shadow 0.15s,transform 0.15s}}
 .card:hover{{box-shadow:0 4px 18px rgba(26,42,74,0.12);transform:translateY(-2px)}}
 .card-top{{display:flex;align-items:flex-start;gap:8px}}
 .card-name{{font-size:15px;font-weight:700;color:#1a2a4a;line-height:1.3;flex:1}}
@@ -188,13 +191,23 @@ header a:hover{{background:rgba(255,255,255,0.1)}}
 .risk-high   {{background:#fdecea;color:#c0392b;border-left:3px solid #e74c3c}}
 .risk-medium {{background:#fef9e7;color:#9a6a00;border-left:3px solid #f39c12}}
 .risk-low    {{background:#eafaf1;color:#1e6f42;border-left:3px solid #27ae60}}
+
+/* Variant buttons row */
+.variant-row{{display:flex;flex-wrap:wrap;gap:6px;margin-top:2px}}
+.variant-btn{{font-size:11px;padding:3px 10px;border-radius:4px;border:1px solid #c5d5e8;
+  background:#ebf5fb;color:#1a6fa8;cursor:pointer;text-decoration:none;
+  transition:background 0.1s}}
+.variant-btn:hover{{background:#d6eaf8}}
+.variant-btn.primary{{background:#1a6fa8;color:#fff;border-color:#1a6fa8}}
+.variant-btn.primary:hover{{background:#15598a}}
+
 .card-footer{{display:flex;align-items:center;justify-content:flex-end;
   border-top:1px solid #eef0f4;padding-top:10px;margin-top:2px}}
 .view-btn{{font-size:12px;font-weight:600;color:#1a6fa8;
-  background:#ebf5fb;border:none;border-radius:5px;padding:5px 14px;cursor:pointer}}
-.card:hover .view-btn{{background:#d6eaf8}}
+  background:#ebf5fb;border:none;border-radius:5px;padding:5px 14px;cursor:pointer;
+  text-decoration:none}}
+.view-btn:hover{{background:#d6eaf8}}
 
-/* Category colors */
 .cat-video_recording{{background:#c0622b}}
 .cat-video_playback{{background:#2471a3}}
 .cat-camera{{background:#117a65}}
@@ -202,7 +215,6 @@ header a:hover{{background:rgba(255,255,255,0.1)}}
 .cat-display{{background:#1e6f42}}
 .cat-default{{background:#555e6b}}
 
-/* ── Empty state ── */
 .empty{{text-align:center;padding:60px 20px;color:#aaa}}
 .empty .icon{{font-size:40px;margin-bottom:10px}}
 .empty p{{font-size:13px}}
@@ -227,7 +239,7 @@ header a:hover{{background:rgba(255,255,255,0.1)}}
   <main class="content">
     <div class="content-header">
       <h2 id="content-title">All Scenarios</h2>
-      <div class="hint" id="content-hint">{total} scenario(s) total</div>
+      <div class="hint" id="content-hint">{total} page(s) total</div>
     </div>
     <div class="scenario-grid" id="scenario-grid"></div>
   </main>
@@ -235,10 +247,8 @@ header a:hover{{background:rgba(255,255,255,0.1)}}
 
 <script>
 var MANIFEST = {manifest_json};
-
 var _activeProject = '__all__';
 
-// Fix GitHub Pages link
 (function() {{
   var m = location.href.match(/https?:\\/\\/[^/]+\\/([^/]+)\\//);
   if (m) document.getElementById('gh-link').href = 'https://github.com/' + m[1];
@@ -248,10 +258,7 @@ function catClass(cat) {{
   var known = ['video_recording','video_playback','camera','audio','display'];
   return 'cat-badge cat-' + (known.indexOf(cat) >= 0 ? cat : 'default');
 }}
-
-function catLabel(cat) {{
-  return cat ? cat.replace(/_/g,' ') : '';
-}}
+function catLabel(cat) {{ return cat ? cat.replace(/_/g,' ') : ''; }}
 
 function renderSidebar() {{
   var all = MANIFEST.projects.reduce(function(n,p){{return n+p.scenarios.length;}},0);
@@ -271,11 +278,11 @@ function renderScenarios(projectId) {{
   var scenarios = [];
   if (projectId === '__all__') {{
     MANIFEST.projects.forEach(function(p) {{
-      p.scenarios.forEach(function(s) {{ scenarios.push({{proj: p.name, s: s}}); }});
+      p.scenarios.forEach(function(s) {{ scenarios.push(s); }});
     }});
   }} else {{
     var proj = MANIFEST.projects.find(function(p){{return p.id===projectId;}});
-    if (proj) proj.scenarios.forEach(function(s) {{ scenarios.push({{proj: proj.name, s: s}}); }});
+    if (proj) proj.scenarios.forEach(function(s) {{ scenarios.push(s); }});
   }}
 
   if (!scenarios.length) {{
@@ -285,14 +292,26 @@ function renderScenarios(projectId) {{
   }}
 
   var html = '';
-  scenarios.forEach(function(item) {{
-    var s = item.s;
+  scenarios.forEach(function(s) {{
     var risksHtml = '';
     (s.risks || []).forEach(function(r) {{
       risksHtml += '<div class="risk risk-' + r.severity + '">' +
         '<strong>' + r.severity.toUpperCase() + '</strong> &nbsp;' + escHtml(r.description) + '</div>';
     }});
-    html += '<a class="card" href="' + escHtml(s.html_path) + '" target="_blank" rel="noopener">';
+
+    // Variant buttons
+    var variantHtml = '';
+    if (s.variants && s.variants.length) {{
+      variantHtml = '<div class="variant-row">';
+      s.variants.forEach(function(v, i) {{
+        variantHtml += '<a class="variant-btn' + (i===0?' primary':'') + '" href="' +
+          escHtml(v.html_path) + '" target="_blank" rel="noopener">' +
+          escHtml(v.name) + '</a>';
+      }});
+      variantHtml += '</div>';
+    }}
+
+    html += '<div class="card">';
     html += '<div class="card-top">';
     html += '<span class="card-name">' + escHtml(s.name) + '</span>';
     html += '<span class="card-ver">v' + escHtml(s.version) + '</span>';
@@ -300,8 +319,13 @@ function renderScenarios(projectId) {{
     html += '<span class="' + catClass(s.category) + '">' + escHtml(catLabel(s.category)) + '</span>';
     if (s.description) html += '<div class="card-desc">' + escHtml(s.description) + '</div>';
     if (risksHtml) html += '<div class="risks">' + risksHtml + '</div>';
-    html += '<div class="card-footer"><button class="view-btn">View Diagram &#8594;</button></div>';
-    html += '</a>';
+    if (variantHtml) {{
+      html += variantHtml;
+    }} else {{
+      html += '<div class="card-footer"><a class="view-btn" href="' +
+        escHtml(s.html_path) + '" target="_blank" rel="noopener">View Diagram &#8594;</a></div>';
+    }}
+    html += '</div>';
   }});
   document.getElementById('scenario-grid').innerHTML = html;
 }}
@@ -324,7 +348,6 @@ function escHtml(s) {{
   return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }}
 
-// Init
 renderSidebar();
 renderScenarios('__all__');
 </script>

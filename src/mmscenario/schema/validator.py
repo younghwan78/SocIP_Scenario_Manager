@@ -4,12 +4,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
 
 from pydantic import ValidationError as PydanticValidationError
 
-from .loader import load_scenario
-from .models import L1Pipeline, L2Activity, L3Memory, ScenarioFile
+from .loader import load_full_scenario, load_scenario
+from .models import IPActivityDB, L1Pipeline, ScenarioFile
 
 
 @dataclass
@@ -39,8 +38,6 @@ class ValidationResult:
         return len(self.errors) == 0
 
     def print_report(self) -> None:
-        import sys
-        out = sys.stdout if sys.stdout.encoding and sys.stdout.encoding.lower() in ("utf-8", "utf-16") else None
         def _print(s: str) -> None:
             try:
                 print(s)
@@ -61,7 +58,7 @@ class SchemaValidator:
 
         # --- Parse (Pydantic handles required fields + type errors) ---
         try:
-            scenario = load_scenario(yaml_path)
+            scenario = load_full_scenario(yaml_path)
         except PydanticValidationError as exc:
             for err in exc.errors():
                 loc = " → ".join(str(p) for p in err["loc"])
@@ -75,9 +72,8 @@ class SchemaValidator:
         result.issues.extend(self._check_referential_integrity(scenario.pipeline))
         result.issues.extend(self._check_override_reasons(scenario))
         if scenario.ip_activity:
-            result.issues.extend(self._check_variant_consistency(scenario.ip_activity))
-        if scenario.bus_memory:
-            result.issues.extend(self._check_l3_sources(scenario.bus_memory))
+            result.issues.extend(self._check_ip_activity(scenario.ip_activity))
+        result.issues.extend(self._check_variants(scenario))
 
         # Cycle detection (delegated to DAG module)
         try:
@@ -120,43 +116,71 @@ class SchemaValidator:
         issues: list[Issue] = []
         if scenario.ip_activity:
             for inst in scenario.ip_activity.ip_instances:
-                if inst.override is not None and not inst.override.reason.strip():
-                    issues.append(Issue(
-                        "ERROR", f"ip_activity.ip_instances[{inst.id}]._override",
-                        "_override.reason must not be empty"
-                    ))
-        if scenario.bus_memory:
-            for entry in scenario.bus_memory.bus_entries:
-                if entry.override is not None and not entry.override.reason.strip():
-                    issues.append(Issue(
-                        "ERROR", f"bus_memory.bus_entries[{entry.id}]._override",
-                        "_override.reason must not be empty"
-                    ))
+                for mode in [inst.default] + inst.modes:
+                    if mode.override is not None and not mode.override.reason.strip():
+                        issues.append(Issue(
+                            "ERROR",
+                            f"ip_activity.ip_instances[{inst.id}].{mode.id}._override",
+                            "_override.reason must not be empty"
+                        ))
         return issues
 
-    def _check_l3_sources(self, bus_memory: L3Memory) -> list[Issue]:
-        """Warn if BW values are present but source is not 'measured'."""
-        issues: list[Issue] = []
-        for entry in bus_memory.bus_entries:
-            has_bw = entry.bw_read_gbps is not None or entry.bw_write_gbps is not None
-            if has_bw and entry.source == "estimated":
-                issues.append(Issue(
-                    "WARNING", f"bus_memory.bus_entries[{entry.id}].source",
-                    "BW value is 'estimated' — confirm with measurement when possible"
-                ))
-        return issues
-
-    def _check_variant_consistency(self, ip_activity: L2Activity) -> list[Issue]:
-        """Warn on duplicate variant conditions for the same IP instance."""
+    def _check_ip_activity(self, ip_activity: IPActivityDB) -> list[Issue]:
+        """Warn on duplicate mode IDs and estimated BW values."""
         issues: list[Issue] = []
         for inst in ip_activity.ip_instances:
+            # Duplicate mode IDs
             seen: set[str] = set()
-            for variant in inst.variants:
-                cond = variant.condition.strip()
-                if cond in seen:
+            for mode in inst.modes:
+                if mode.id in seen:
                     issues.append(Issue(
-                        "WARNING", f"ip_activity.ip_instances[{inst.id}].variants",
-                        f"Duplicate variant condition: '{cond}'"
+                        "WARNING",
+                        f"ip_activity.ip_instances[{inst.id}].modes",
+                        f"Duplicate mode id: '{mode.id}'"
                     ))
-                seen.add(cond)
+                seen.add(mode.id)
+            # Estimated BW hint
+            for mode in [inst.default] + inst.modes:
+                has_bw = mode.bw_read_gbps is not None or mode.bw_write_gbps is not None
+                if has_bw and mode.source.value == "estimated":
+                    issues.append(Issue(
+                        "WARNING",
+                        f"ip_activity.ip_instances[{inst.id}].{mode.id}.source",
+                        "BW value is 'estimated' — confirm with measurement when possible"
+                    ))
+        return issues
+
+    def _check_variants(self, scenario: ScenarioFile) -> list[Issue]:
+        """Check variant IDs are unique and referenced node/edge IDs exist."""
+        issues: list[Issue] = []
+        node_ids = {n.id for n in scenario.pipeline.nodes}
+        edge_ids = {e.id for e in scenario.pipeline.edges}
+        ip_ids = (
+            {ip.id for ip in scenario.ip_activity.ip_instances}
+            if scenario.ip_activity else set()
+        )
+
+        seen_ids: set[str] = set()
+        for v in scenario.variants:
+            if v.id in seen_ids:
+                issues.append(Issue("ERROR", f"variants[{v.id}]", "Duplicate variant id"))
+            seen_ids.add(v.id)
+            for nid in v.buffers:
+                if nid not in node_ids:
+                    issues.append(Issue(
+                        "WARNING", f"variants[{v.id}].buffers",
+                        f"Node '{nid}' not found in pipeline.nodes"
+                    ))
+            for eid in v.edges:
+                if eid not in edge_ids:
+                    issues.append(Issue(
+                        "WARNING", f"variants[{v.id}].edges",
+                        f"Edge '{eid}' not found in pipeline.edges"
+                    ))
+            for ipid in v.ip_modes:
+                if ipid not in ip_ids:
+                    issues.append(Issue(
+                        "WARNING", f"variants[{v.id}].ip_modes",
+                        f"IP '{ipid}' not found in ip_activity.ip_instances"
+                    ))
         return issues

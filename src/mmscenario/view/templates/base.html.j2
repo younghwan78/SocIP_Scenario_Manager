@@ -102,10 +102,18 @@
 <body>
 
 <header>
-  <h1>{{ scenario.scenario.name }}</h1>
+  <h1>{{ scenario.scenario.name }}{% if active_variant %} <span style="font-size:14px;font-weight:400;opacity:0.75">— {{ active_variant.name }}</span>{% endif %}</h1>
   <span class="meta">v{{ scenario.scenario.version }} · {{ scenario.scenario.category }}</span>
   <span class="meta">output_period: {{ scenario.scenario.output_period_ms }}ms · budget: {{ scenario.scenario.budget_ms }}ms</span>
   <span class="spacer"></span>
+  {% if all_variants %}
+  <select onchange="if(this.value) window.location.href=this.value"
+    style="font-size:12px;padding:4px 8px;border-radius:4px;border:1px solid rgba(255,255,255,0.3);background:rgba(255,255,255,0.1);color:#fff;cursor:pointer;margin-right:8px">
+    {% for v in all_variants %}
+    <option value="{{ v.html_path }}"{% if active_variant and v.id == active_variant.id %} selected{% endif %}>{{ v.name }}</option>
+    {% endfor %}
+  </select>
+  {% endif %}
   <button onclick="window.print()" style="background:#2a3f6a;color:#fff;border:none;padding:5px 12px;border-radius:3px;cursor:pointer;">⎙ Snapshot</button>
 </header>
 
@@ -154,38 +162,24 @@
     <h3>Node / Edge Detail</h3>
     <p class="empty-hint">Click a node or edge to see details.</p>
 
-    <!-- Architect-only: IP + BW summary tables (always visible in architect mode) -->
+    <!-- Architect-only: IP summary table (always visible in architect mode) -->
     {% if scenario.ip_activity %}
     <div id="ip-summary" style="display:none;margin-top:16px;border-top:1px solid #eee;padding-top:12px;">
-      <strong style="font-size:12px;">IP Summary</strong>
+      <strong style="font-size:12px;">IP Summary</strong>{% if active_variant %}<span style="font-size:10px;color:#888;margin-left:6px;">({{ active_variant.name }})</span>{% endif %}
       <table class="prop-table" style="margin-top:8px;">
-        <tr style="font-size:11px;font-weight:600;">
-          <td>IP</td><td>freq (MHz)</td><td>ratio</td><td>source</td>
+        <tr style="font-size:10px;font-weight:600;color:#555;">
+          <td>IP</td><td>freq</td><td>power</td><td>BW R</td><td>BW W</td><td>exec</td><td>src</td>
         </tr>
         {% for ip in scenario.ip_activity.ip_instances %}
+        {% set mode = ip.default %}
         <tr>
           <td>{{ ip.id }}</td>
-          <td>{{ ip.freq_mhz if ip.freq_mhz is not none else '—' }}</td>
-          <td>{{ ip.active_ratio if ip.active_ratio is not none else '—' }}</td>
-          <td>{{ ip.source }}</td>
-        </tr>
-        {% endfor %}
-      </table>
-    </div>
-    {% endif %}
-    {% if scenario.bus_memory %}
-    <div id="bw-summary" style="display:none;margin-top:12px;border-top:1px solid #eee;padding-top:10px;">
-      <strong style="font-size:12px;">BW Summary</strong>
-      <table class="prop-table" style="margin-top:8px;">
-        <tr style="font-size:11px;font-weight:600;">
-          <td>Bus</td><td>Read GB/s</td><td>Write GB/s</td><td>source</td>
-        </tr>
-        {% for entry in scenario.bus_memory.bus_entries %}
-        <tr>
-          <td>{{ entry.id }}</td>
-          <td>{{ entry.bw_read_gbps if entry.bw_read_gbps is not none else '—' }}</td>
-          <td>{{ entry.bw_write_gbps if entry.bw_write_gbps is not none else '—' }}</td>
-          <td>{{ entry.source }}</td>
+          <td>{{ mode.freq_mhz if mode.freq_mhz is not none else '—' }} <span style="color:#aaa">MHz</span></td>
+          <td>{{ mode.power_mA if mode.power_mA is not none else '—' }} <span style="color:#aaa">mA</span></td>
+          <td>{{ mode.bw_read_gbps if mode.bw_read_gbps is not none else '—' }} <span style="color:#aaa">GB/s</span></td>
+          <td>{{ mode.bw_write_gbps if mode.bw_write_gbps is not none else '—' }} <span style="color:#aaa">GB/s</span></td>
+          <td>{{ mode.exec_time_ms if mode.exec_time_ms is not none else '—' }} <span style="color:#aaa">ms</span></td>
+          <td>{{ mode.source }}</td>
         </tr>
         {% endfor %}
       </table>
@@ -201,7 +195,7 @@
 // ── Data from Python ──────────────────────────────────────────────
 var ELEMENTS   = {{ elements | tojson }};
 var SCENARIO   = {{ scenario | tojson }};
-var LAYER_Y    = { app: 0, framework: 160, hal: 320, kernel: 480, hw: 680, memory: 860 };
+var LAYER_Y    = { app: 0, framework: 160, hal: 320, kernel: 480, hw: 680, memory: 980 };
 var MODE       = "executive";
 
 // ── Layer background band definitions (module scope — static, never changes) ──
@@ -211,9 +205,20 @@ var LAYER_BANDS = [
   { y1:  80,  y2: 240,  color: 'rgba(41,128,185,0.07)'  },  // framework
   { y1: 240,  y2: 400,  color: 'rgba(22,160,133,0.07)'  },  // hal
   { y1: 400,  y2: 580,  color: 'rgba(44,62,80,0.06)'    },  // kernel
-  { y1: 580,  y2: 770,  color: 'rgba(230,126,34,0.07)'  },  // hw
-  { y1: 770,  y2: 1060, color: 'rgba(39,174,96,0.07)'   },  // memory
+  { y1: 580,  y2: 830,  color: 'rgba(230,126,34,0.07)'  },  // hw
+  { y1: 830,  y2: 1300, color: 'rgba(39,174,96,0.07)'   },  // memory
 ];
+
+// ── Active variant ip_modes (ip_id → mode_id) ────────────────────
+var ACTIVE_IP_MODES = {{ (active_variant.ip_modes if active_variant else {}) | tojson }};
+
+// ── IP activity lookup map (ip_id → IPSpec), built at load time ──
+var IP_SPEC_MAP = {};
+if (SCENARIO.ip_activity) {
+  SCENARIO.ip_activity.ip_instances.forEach(function(spec) {
+    IP_SPEC_MAP[spec.id] = spec;
+  });
+}
 
 // ── DPU composition lookup map (display_id → DpuComposition), built at load time ──
 var DPU_COMP_MAP = {};
@@ -422,7 +427,7 @@ function drawLaneDividers() {
     {y: 240, style: '1px dashed #dde'},
     {y: 400, style: '1px dashed #dde'},
     {y: 580, style: '2px solid #c8ccd4'},  // SW ↔ HW boundary
-    {y: 770, style: '1px dashed #cce'},
+    {y: 830, style: '1px dashed #cce'},   // HW ↔ Buffer boundary
   ];
   separators.forEach(function(sep) {
     var renderedY = cy.pan().y + sep.y * cy.zoom();
@@ -598,13 +603,11 @@ function showScenarioOverview() {
     });
     html += '</div>';
   }
-  // Replace only the top part of the panel, keep architect summary divs intact
+  // Replace only the top part of the panel, keep architect summary div intact
   var panel = document.getElementById('detail-panel');
   var ipSummary = document.getElementById('ip-summary');
-  var bwSummary = document.getElementById('bw-summary');
   panel.innerHTML = html;
   if (ipSummary) panel.appendChild(ipSummary);
-  if (bwSummary) panel.appendChild(bwSummary);
 }
 
 // ── DPU Composition panel (WinScope-style layer layout) ──────────────────
@@ -726,38 +729,21 @@ function showNodeDetail(data) {
 
   // IP activity detail — Architect mode only
   if (MODE === 'architect') {
-    var ipInfo = getIPInfo(data.id);
-    if (ipInfo) {
-      html += '<div id="variant-section">';
-      html += '<strong style="font-size:12px">IP Activity</strong>';
-      html += '<table class="prop-table" style="margin-top:6px">';
-      html += row('freq_mhz', ipInfo.freq_mhz != null ? ipInfo.freq_mhz : '—');
-      html += row('active_ratio', ipInfo.active_ratio != null ? ipInfo.active_ratio : '—');
-      html += row('source', ipInfo.source || '—');
-      html += '</table>';
-      if (ipInfo.variants && ipInfo.variants.length) {
-        html += '<br><strong style="font-size:11px">Variants</strong>';
-        html += '<table id="variant-table"><tr><th>Condition</th><th>freq_mhz</th><th>active_ratio</th></tr>';
-        ipInfo.variants.forEach(function(v) {
-          html += '<tr><td>' + escHtml(v.condition) + '</td><td>' + (v.freq_mhz != null ? v.freq_mhz : '—') + '</td><td>' + (v.active_ratio != null ? v.active_ratio : '—') + '</td></tr>';
-        });
-        html += '</table>';
-      }
-      if (ipInfo._review_flags && ipInfo._review_flags.length) {
-        ipInfo._review_flags.forEach(function(f) {
+    var ipSpec = getIPInfo(data.id);
+    if (ipSpec) {
+      html += buildIPDetailHtml(ipSpec);
+      if (ipSpec._review_flags && ipSpec._review_flags.length) {
+        ipSpec._review_flags.forEach(function(f) {
           html += '<span class="review-flag">⚠ ' + escHtml(f.field) + ': ' + escHtml(f.reason) + '</span>';
         });
       }
-      html += '</div>';
     }
   }
 
   var panel = document.getElementById('detail-panel');
   var ipSummary = document.getElementById('ip-summary');
-  var bwSummary = document.getElementById('bw-summary');
   panel.innerHTML = html;
   if (ipSummary) panel.appendChild(ipSummary);
-  if (bwSummary) panel.appendChild(bwSummary);
 }
 
 function showEdgeDetail(data) {
@@ -771,15 +757,47 @@ function showEdgeDetail(data) {
   html += '</table>';
   var panel = document.getElementById('detail-panel');
   var ipSummary = document.getElementById('ip-summary');
-  var bwSummary = document.getElementById('bw-summary');
   panel.innerHTML = html;
   if (ipSummary) panel.appendChild(ipSummary);
-  if (bwSummary) panel.appendChild(bwSummary);
 }
 
 function getIPInfo(nodeId) {
-  if (!SCENARIO.ip_activity) return null;
-  return SCENARIO.ip_activity.ip_instances.find(function(ip) { return ip.id === nodeId; }) || null;
+  return IP_SPEC_MAP[nodeId] || null;
+}
+
+function getActiveMode(spec) {
+  var modeId = ACTIVE_IP_MODES[spec.id] || 'default';
+  if (modeId === 'default') return spec.default;
+  var m = (spec.modes || []).find(function(m) { return m.id === modeId; });
+  return m || spec.default;
+}
+
+function buildIPDetailHtml(spec) {
+  var mode = getActiveMode(spec);
+  var html = '<div id="variant-section">';
+  html += '<strong style="font-size:12px">IP Activity</strong>';
+  if (mode.id !== 'default') {
+    html += '<span style="font-size:10px;color:#c0622b;margin-left:6px;font-weight:600">mode: ' + escHtml(mode.id) + '</span>';
+  }
+  html += '<table class="prop-table" style="margin-top:6px">';
+  if (mode.freq_mhz    != null) html += row('freq',    mode.freq_mhz    + ' MHz');
+  if (mode.power_mA    != null) html += row('power',   mode.power_mA    + ' mA');
+  if (mode.bw_read_gbps  != null) html += row('BW read',  mode.bw_read_gbps  + ' GB/s');
+  if (mode.bw_write_gbps != null) html += row('BW write', mode.bw_write_gbps + ' GB/s');
+  if (mode.exec_time_ms  != null) html += row('exec time', mode.exec_time_ms + ' ms');
+  html += row('source', mode.source || '—');
+  html += '</table>';
+  // Other available modes
+  if (spec.modes && spec.modes.length) {
+    html += '<div style="margin-top:8px;font-size:10px;color:#888"><strong>Available modes:</strong> ';
+    html += spec.modes.map(function(m) {
+      return '<span style="background:#f4f6f9;border-radius:3px;padding:1px 5px;margin-right:3px">' +
+        escHtml(m.id) + (m.condition ? ' (' + escHtml(m.condition) + ')' : '') + '</span>';
+    }).join('');
+    html += '</div>';
+  }
+  html += '</div>';
+  return html;
 }
 
 // I4: Layer toggle
@@ -813,11 +831,9 @@ function switchMode(newMode) {
     if (ipSel) { ipSel.value = ''; highlightIP(''); }
   }
 
-  // Detail panel: architect summary tables visibility
+  // Detail panel: IP summary table visibility
   var ipSummary = document.getElementById('ip-summary');
-  var bwSummary = document.getElementById('bw-summary');
   if (ipSummary) ipSummary.style.display = MODE === 'architect' ? '' : 'none';
-  if (bwSummary) bwSummary.style.display = MODE === 'architect' ? '' : 'none';
 
   clearHighlight();
   resetPanel();

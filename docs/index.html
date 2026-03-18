@@ -9,7 +9,6 @@
 body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
   background:#f0f2f5;color:#1a2a4a;min-height:100vh;display:flex;flex-direction:column}
 
-/* ── Header ── */
 header{background:linear-gradient(135deg,#1a2a4a 0%,#2a3f6a 100%);
   color:#fff;padding:18px 28px;display:flex;align-items:center;gap:16px;
   box-shadow:0 2px 8px rgba(0,0,0,0.25)}
@@ -20,10 +19,8 @@ header a{color:#a8c0e8;font-size:12px;text-decoration:none;
   border:1px solid rgba(168,192,232,0.4);border-radius:4px;padding:4px 10px}
 header a:hover{background:rgba(255,255,255,0.1)}
 
-/* ── Layout ── */
 .layout{display:flex;flex:1;min-height:0}
 
-/* ── Sidebar ── */
 .sidebar{width:220px;min-width:180px;background:#fff;
   border-right:1px solid #dde3ec;padding:16px 12px;
   display:flex;flex-direction:column;gap:4px;overflow-y:auto}
@@ -39,18 +36,15 @@ header a:hover{background:rgba(255,255,255,0.1)}
   border-radius:10px;padding:1px 7px;min-width:22px;text-align:center}
 .proj-btn.active .count{background:#d6eaf8;color:#1a6fa8}
 
-/* ── Main content ── */
 .content{flex:1;padding:24px 28px;overflow-y:auto}
 .content-header{margin-bottom:20px}
 .content-header h2{font-size:18px;font-weight:700;color:#1a2a4a}
 .content-header .hint{font-size:12px;color:#888;margin-top:3px}
-.scenario-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));
-  gap:16px}
+.scenario-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:16px}
 
-/* ── Scenario card ── */
 .card{background:#fff;border-radius:10px;border:1px solid #dde3ec;
   padding:18px 20px;display:flex;flex-direction:column;gap:10px;
-  transition:box-shadow 0.15s,transform 0.15s;cursor:pointer;text-decoration:none;color:inherit}
+  transition:box-shadow 0.15s,transform 0.15s}
 .card:hover{box-shadow:0 4px 18px rgba(26,42,74,0.12);transform:translateY(-2px)}
 .card-top{display:flex;align-items:flex-start;gap:8px}
 .card-name{font-size:15px;font-weight:700;color:#1a2a4a;line-height:1.3;flex:1}
@@ -65,13 +59,23 @@ header a:hover{background:rgba(255,255,255,0.1)}
 .risk-high   {background:#fdecea;color:#c0392b;border-left:3px solid #e74c3c}
 .risk-medium {background:#fef9e7;color:#9a6a00;border-left:3px solid #f39c12}
 .risk-low    {background:#eafaf1;color:#1e6f42;border-left:3px solid #27ae60}
+
+/* Variant buttons row */
+.variant-row{display:flex;flex-wrap:wrap;gap:6px;margin-top:2px}
+.variant-btn{font-size:11px;padding:3px 10px;border-radius:4px;border:1px solid #c5d5e8;
+  background:#ebf5fb;color:#1a6fa8;cursor:pointer;text-decoration:none;
+  transition:background 0.1s}
+.variant-btn:hover{background:#d6eaf8}
+.variant-btn.primary{background:#1a6fa8;color:#fff;border-color:#1a6fa8}
+.variant-btn.primary:hover{background:#15598a}
+
 .card-footer{display:flex;align-items:center;justify-content:flex-end;
   border-top:1px solid #eef0f4;padding-top:10px;margin-top:2px}
 .view-btn{font-size:12px;font-weight:600;color:#1a6fa8;
-  background:#ebf5fb;border:none;border-radius:5px;padding:5px 14px;cursor:pointer}
-.card:hover .view-btn{background:#d6eaf8}
+  background:#ebf5fb;border:none;border-radius:5px;padding:5px 14px;cursor:pointer;
+  text-decoration:none}
+.view-btn:hover{background:#d6eaf8}
 
-/* Category colors */
 .cat-video_recording{background:#c0622b}
 .cat-video_playback{background:#2471a3}
 .cat-camera{background:#117a65}
@@ -79,7 +83,6 @@ header a:hover{background:rgba(255,255,255,0.1)}
 .cat-display{background:#1e6f42}
 .cat-default{background:#555e6b}
 
-/* ── Empty state ── */
 .empty{text-align:center;padding:60px 20px;color:#aaa}
 .empty .icon{font-size:40px;margin-bottom:10px}
 .empty p{font-size:13px}
@@ -104,7 +107,7 @@ header a:hover{background:rgba(255,255,255,0.1)}
   <main class="content">
     <div class="content-header">
       <h2 id="content-title">All Scenarios</h2>
-      <div class="hint" id="content-hint">1 scenario(s) total</div>
+      <div class="hint" id="content-hint">11 page(s) total</div>
     </div>
     <div class="scenario-grid" id="scenario-grid"></div>
   </main>
@@ -114,35 +117,134 @@ header a:hover{background:rgba(255,255,255,0.1)}
 var MANIFEST = {
   "projects": [
     {
-      "id": "__root__",
-      "name": "General",
+      "id": "projectA",
+      "name": "Projecta",
       "scenarios": [
         {
-          "id": "uhd30_video_recording",
-          "name": "UHD30 Video Recording",
-          "category": "video_recording",
-          "version": "0.3",
-          "description": "Android camera pipeline recording UHD (3840×2160) video at 30 fps. The ISP processes RAW sensor data via an M2M path (2-frame latency) and fans out to two paths: an encode path (ISP→enc_buf→MFC→bitstream→storage) and a p…",
+          "id": "video_playback",
+          "name": "Video Playback",
+          "category": "video_playback",
+          "version": "1.0",
+          "description": "Local video playback on Samsung Galaxy (Exynos). GalleryApp uses MediaCodec to decode H.265/AV1 via Exynos MFC. Decoded frames are composited by SurfaceFlinger and displayed via DPU.",
           "risks": [
             {
-              "severity": "medium",
-              "description": "ISP M2M 2-frame latency: budget may be exceeded under memory pressure"
+              "severity": "low",
+              "description": "AV1 decode at UHD30 approaches MFC throughput limit — reduce if thermal throttled"
             },
             {
               "severity": "low",
-              "description": "GPU composition fallback (if DPU overlay unavailable) adds BW contention"
+              "description": "8K30 requires DPU downscale engine — verify DECON scaler availability"
             }
           ],
-          "html_path": "scenarios/uhd30_video_recording.html"
+          "html_path": "scenarios/projectA/video_playback_fhd30.html",
+          "variants": [
+            {
+              "id": "FHD30",
+              "name": "FHD 30fps (1920×1080)",
+              "html_path": "scenarios/projectA/video_playback_fhd30.html"
+            },
+            {
+              "id": "UHD30",
+              "name": "UHD 30fps (3840×2160)",
+              "html_path": "scenarios/projectA/video_playback_uhd30.html"
+            },
+            {
+              "id": "8K30",
+              "name": "8K 30fps (7680×4320)",
+              "html_path": "scenarios/projectA/video_playback_8k30.html"
+            }
+          ]
+        },
+        {
+          "id": "video_recording",
+          "name": "Video Recording",
+          "category": "video_recording",
+          "version": "1.0",
+          "description": "Samsung Galaxy phone camera recording pipeline on Exynos SoC. Sensor RAW data is processed by ISP (M2M path) and simultaneously fed to MFC for encoding and DPU for preview display. Supports FHD30 through 8K30 resolution …",
+          "risks": [
+            {
+              "severity": "medium",
+              "description": "ISP M2M 2-frame latency: pipeline budget may be exceeded under memory pressure"
+            },
+            {
+              "severity": "medium",
+              "description": "UHD60/8K30: ISP+MFC peak BW may cause DRAM bottleneck"
+            },
+            {
+              "severity": "low",
+              "description": "GPU composition fallback (overlay → GPU) adds BW contention"
+            }
+          ],
+          "html_path": "scenarios/projectA/video_recording_fhd30.html",
+          "variants": [
+            {
+              "id": "FHD30",
+              "name": "FHD 30fps (1920×1080)",
+              "html_path": "scenarios/projectA/video_recording_fhd30.html"
+            },
+            {
+              "id": "UHD30",
+              "name": "UHD 30fps (3840×2160)",
+              "html_path": "scenarios/projectA/video_recording_uhd30.html"
+            },
+            {
+              "id": "FHD60",
+              "name": "FHD 60fps (1920×1080)",
+              "html_path": "scenarios/projectA/video_recording_fhd60.html"
+            },
+            {
+              "id": "UHD60",
+              "name": "UHD 60fps (3840×2160)",
+              "html_path": "scenarios/projectA/video_recording_uhd60.html"
+            },
+            {
+              "id": "8K30",
+              "name": "8K 30fps (7680×4320)",
+              "html_path": "scenarios/projectA/video_recording_8k30.html"
+            }
+          ]
+        },
+        {
+          "id": "youtube_playback",
+          "name": "YouTube Playback",
+          "category": "video_playback",
+          "version": "1.0",
+          "description": "YouTube streaming playback on Samsung Galaxy (Exynos). ExoPlayer (inside YouTube app) decodes AV1 (UHD/8K) or VP9 (FHD fallback) via Exynos MFC. DPU composites video + YouTube UI overlay. Network buffer managed by ExoPla…",
+          "risks": [
+            {
+              "severity": "medium",
+              "description": "AV1 8K30 decode: near MFC throughput ceiling — thermal throttle risk"
+            },
+            {
+              "severity": "low",
+              "description": "Network stall causes ExoPlayer rebuffering — frame drop on DPU output"
+            }
+          ],
+          "html_path": "scenarios/projectA/youtube_playback_fhd30.html",
+          "variants": [
+            {
+              "id": "FHD30",
+              "name": "FHD 30fps VP9 (1920×1080)",
+              "html_path": "scenarios/projectA/youtube_playback_fhd30.html"
+            },
+            {
+              "id": "UHD30",
+              "name": "UHD 30fps AV1 (3840×2160)",
+              "html_path": "scenarios/projectA/youtube_playback_uhd30.html"
+            },
+            {
+              "id": "8K30",
+              "name": "8K 30fps AV1 (7680×4320)",
+              "html_path": "scenarios/projectA/youtube_playback_8k30.html"
+            }
+          ]
         }
       ]
     }
   ]
 };
-
 var _activeProject = '__all__';
 
-// Fix GitHub Pages link
 (function() {
   var m = location.href.match(/https?:\/\/[^/]+\/([^/]+)\//);
   if (m) document.getElementById('gh-link').href = 'https://github.com/' + m[1];
@@ -152,10 +254,7 @@ function catClass(cat) {
   var known = ['video_recording','video_playback','camera','audio','display'];
   return 'cat-badge cat-' + (known.indexOf(cat) >= 0 ? cat : 'default');
 }
-
-function catLabel(cat) {
-  return cat ? cat.replace(/_/g,' ') : '';
-}
+function catLabel(cat) { return cat ? cat.replace(/_/g,' ') : ''; }
 
 function renderSidebar() {
   var all = MANIFEST.projects.reduce(function(n,p){return n+p.scenarios.length;},0);
@@ -175,11 +274,11 @@ function renderScenarios(projectId) {
   var scenarios = [];
   if (projectId === '__all__') {
     MANIFEST.projects.forEach(function(p) {
-      p.scenarios.forEach(function(s) { scenarios.push({proj: p.name, s: s}); });
+      p.scenarios.forEach(function(s) { scenarios.push(s); });
     });
   } else {
     var proj = MANIFEST.projects.find(function(p){return p.id===projectId;});
-    if (proj) proj.scenarios.forEach(function(s) { scenarios.push({proj: proj.name, s: s}); });
+    if (proj) proj.scenarios.forEach(function(s) { scenarios.push(s); });
   }
 
   if (!scenarios.length) {
@@ -189,14 +288,26 @@ function renderScenarios(projectId) {
   }
 
   var html = '';
-  scenarios.forEach(function(item) {
-    var s = item.s;
+  scenarios.forEach(function(s) {
     var risksHtml = '';
     (s.risks || []).forEach(function(r) {
       risksHtml += '<div class="risk risk-' + r.severity + '">' +
         '<strong>' + r.severity.toUpperCase() + '</strong> &nbsp;' + escHtml(r.description) + '</div>';
     });
-    html += '<a class="card" href="' + escHtml(s.html_path) + '" target="_blank" rel="noopener">';
+
+    // Variant buttons
+    var variantHtml = '';
+    if (s.variants && s.variants.length) {
+      variantHtml = '<div class="variant-row">';
+      s.variants.forEach(function(v, i) {
+        variantHtml += '<a class="variant-btn' + (i===0?' primary':'') + '" href="' +
+          escHtml(v.html_path) + '" target="_blank" rel="noopener">' +
+          escHtml(v.name) + '</a>';
+      });
+      variantHtml += '</div>';
+    }
+
+    html += '<div class="card">';
     html += '<div class="card-top">';
     html += '<span class="card-name">' + escHtml(s.name) + '</span>';
     html += '<span class="card-ver">v' + escHtml(s.version) + '</span>';
@@ -204,8 +315,13 @@ function renderScenarios(projectId) {
     html += '<span class="' + catClass(s.category) + '">' + escHtml(catLabel(s.category)) + '</span>';
     if (s.description) html += '<div class="card-desc">' + escHtml(s.description) + '</div>';
     if (risksHtml) html += '<div class="risks">' + risksHtml + '</div>';
-    html += '<div class="card-footer"><button class="view-btn">View Diagram &#8594;</button></div>';
-    html += '</a>';
+    if (variantHtml) {
+      html += variantHtml;
+    } else {
+      html += '<div class="card-footer"><a class="view-btn" href="' +
+        escHtml(s.html_path) + '" target="_blank" rel="noopener">View Diagram &#8594;</a></div>';
+    }
+    html += '</div>';
   });
   document.getElementById('scenario-grid').innerHTML = html;
 }
@@ -228,7 +344,6 @@ function escHtml(s) {
   return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
-// Init
 renderSidebar();
 renderScenarios('__all__');
 </script>

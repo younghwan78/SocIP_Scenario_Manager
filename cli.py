@@ -41,7 +41,6 @@ def cmd_validate(args: argparse.Namespace) -> int:
 
 
 def cmd_render(args: argparse.Namespace) -> int:
-    from mmscenario.dag import ScenarioPipeline
     from mmscenario.schema import load_full_scenario
     from mmscenario.view import ViewRenderer
     from mmscenario.view.renderer import slugify
@@ -52,32 +51,50 @@ def cmd_render(args: argparse.Namespace) -> int:
         return 1
 
     try:
-        # Load L0+L1 and auto-merge L2+L3 from traces/ if present
         scenario = load_full_scenario(yaml_path)
     except Exception as exc:
         logger.error("Failed to load scenario: %s", exc)
         return 1
 
-    # Output filename derived from scenario name defined in YAML
-    if args.output:
-        output_path = Path(args.output)
-    else:
-        output_path = Path("output") / f"{slugify(scenario.scenario.name)}.html"
-
-    pipeline = ScenarioPipeline(scenario.pipeline)
-    cycles = pipeline.detect_cycles()
-    if cycles:
-        logger.warning("Pipeline has cycles — layout may be incorrect: %s", cycles)
-
     static_dir = Path(args.static_dir) if hasattr(args, "static_dir") and args.static_dir else Path("static")
     renderer = ViewRenderer(static_dir=static_dir)
-    try:
-        renderer.render(scenario, pipeline, output_path=output_path)
-    except FileNotFoundError as exc:
-        logger.error("%s", exc)
-        return 1
+    base_slug = slugify(scenario.scenario.name)
 
-    logger.info("HTML written to: %s", output_path.resolve())
+    # Determine output directory (project-aware)
+    if args.output:
+        # --output given: single-file mode (ignores variants)
+        from mmscenario.dag import ScenarioPipeline
+        output_path = Path(args.output)
+        pipeline = ScenarioPipeline(scenario.pipeline)
+        cycles = pipeline.detect_cycles()
+        if cycles:
+            logger.warning("Pipeline has cycles — layout may be incorrect: %s", cycles)
+        try:
+            renderer.render(scenario, pipeline, output_path=output_path)
+        except FileNotFoundError as exc:
+            logger.error("%s", exc)
+            return 1
+        logger.info("HTML written to: %s", output_path.resolve())
+    else:
+        # Auto output dir: output/<project>/ if scenario is under a project subdir
+        rel = yaml_path.relative_to(yaml_path.parent.parent) \
+              if yaml_path.parent.name != "usecase" else yaml_path.relative_to(yaml_path.parent)
+        # Determine project subfolder
+        parts = yaml_path.parts
+        project_dir = Path("output")
+        for i, p in enumerate(parts):
+            if p.lower() == "usecase" and i + 1 < len(parts) - 1:
+                project_dir = Path("output") / parts[i + 1]
+                break
+        try:
+            manifest = renderer.render_all_variants(
+                scenario, output_dir=project_dir, base_slug=base_slug,
+            )
+        except FileNotFoundError as exc:
+            logger.error("%s", exc)
+            return 1
+        for m in manifest:
+            logger.info("HTML written to: %s", (project_dir / Path(m["html_path"]).name).resolve())
     return 0
 
 

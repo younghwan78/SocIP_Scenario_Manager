@@ -86,7 +86,7 @@ class L1Node(BaseModel):
     external: bool = False        # True for components outside SoC boundary (sensor, display, etc.)
     compression: Optional[bool] = None  # Buffer: AFBC/SBWC compression enabled → badge 'C'
     llc: Optional[bool] = None          # Buffer: Last Level Cache usage → badge 'L'
-    rotation: Optional[bool] = None     # HW IP (DPU): rotation enabled → badge 'R'
+    rotation: Optional[bool] = None     # Buffer: DPU rotates this buffer → badge 'R'
 
 
 class L1Edge(BaseModel):
@@ -119,7 +119,50 @@ class L1Pipeline(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# L2 · IP Activity
+# IP Activity DB  (unified L2 + L3 — replaces separate L2Activity / L3Memory)
+# ---------------------------------------------------------------------------
+
+class IPModeSpec(BaseModel):
+    """Operating parameters for one IP mode (default or a named variant)."""
+    id: str = "default"
+    condition: Optional[str] = None       # human-readable condition description
+    freq_mhz: Optional[float] = None
+    power_mA: Optional[float] = None
+    bw_read_gbps: Optional[float] = None
+    bw_write_gbps: Optional[float] = None
+    exec_time_ms: Optional[float] = None  # wall-clock time to process one frame
+    source: SourceEnum = SourceEnum.estimated
+    override: Optional[Override] = Field(None, alias="_override")
+
+    model_config = {"populate_by_name": True}
+
+
+class IPSpec(BaseModel):
+    """One IP block with its default operating point and optional named modes."""
+    id: str
+    default: IPModeSpec
+    modes: list[IPModeSpec] = Field(default_factory=list)
+    review_flags: list[ReviewFlag] = Field(default_factory=list, alias="_review_flags")
+
+    model_config = {"populate_by_name": True}
+
+    def get_mode(self, mode_id: str) -> IPModeSpec:
+        """Return the named mode, or default if mode_id is 'default' or not found."""
+        if mode_id == "default":
+            return self.default
+        for m in self.modes:
+            if m.id == mode_id:
+                return m
+        return self.default
+
+
+class IPActivityDB(BaseModel):
+    """Combined IP activity + BW database (replaces separate l2 + l3 files)."""
+    ip_instances: list[IPSpec]
+
+
+# ---------------------------------------------------------------------------
+# Legacy L2 / L3 models — kept for backward-compat loading of old trace files
 # ---------------------------------------------------------------------------
 
 class IPVariant(BaseModel):
@@ -145,10 +188,6 @@ class L2IPInstance(BaseModel):
 class L2Activity(BaseModel):
     ip_instances: list[L2IPInstance]
 
-
-# ---------------------------------------------------------------------------
-# L3 · Bus / Memory
-# ---------------------------------------------------------------------------
 
 class L3BusEntry(BaseModel):
     id: str
@@ -203,16 +242,34 @@ class DpuComposition(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Scenario Variants
+# ---------------------------------------------------------------------------
+
+class ScenarioVariant(BaseModel):
+    """Resolution / mode variant of a scenario sharing the same pipeline topology."""
+    id: str                              # e.g. "FHD30", "UHD30", "8K30"
+    name: str                            # e.g. "FHD 30fps (1920×1080)"
+    output_period_ms: Optional[float] = None
+    budget_ms: Optional[float] = None
+    # node_id → field overrides for buffer nodes (label, compression, llc, rotation, ...)
+    buffers: dict[str, dict] = Field(default_factory=dict)
+    # edge_id → field overrides (format, resolution, fps, fan_out)
+    edges: dict[str, dict] = Field(default_factory=dict)
+    # ip_id → mode_id in IPSpec.modes ("default" or named mode)
+    ip_modes: dict[str, str] = Field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
 # Top-level scenario file
 # ---------------------------------------------------------------------------
 
 class ScenarioFile(BaseModel):
     scenario: L0Scenario
     pipeline: L1Pipeline
-    ip_activity: Optional[L2Activity] = None
-    bus_memory: Optional[L3Memory] = None
+    ip_activity: Optional[IPActivityDB] = None
     dpu_compositions: list[DpuComposition] = Field(default_factory=list)
     # ^ list enables foldable / multi-display scenarios (display0, display1, …)
+    variants: list[ScenarioVariant] = Field(default_factory=list)
 
 
 # Loading functions live in schema/loader.py to keep this file model-only.

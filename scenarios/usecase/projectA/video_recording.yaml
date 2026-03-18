@@ -1,0 +1,362 @@
+scenario:
+  category: video_recording
+  name: Video Recording
+  version: "1.0"
+  description: >
+    Samsung Galaxy phone camera recording pipeline on Exynos SoC.
+    Sensor RAW data is processed by ISP (M2M path) and simultaneously
+    fed to MFC for encoding and DPU for preview display.
+    Supports FHD30 through 8K30 resolution variants.
+  sw_thread: hal_kernel
+  output_period_ms: 33.3   # 30fps base; overridden per variant
+  budget_ms: 30.0
+  pipeline_latency_frames: 2  # ISP M2M path introduces 2-frame latency
+  risks:
+    - severity: medium
+      description: "ISP M2M 2-frame latency: pipeline budget may be exceeded under memory pressure"
+    - severity: medium
+      description: "UHD60/8K30: ISP+MFC peak BW may cause DRAM bottleneck"
+    - severity: low
+      description: "GPU composition fallback (overlay → GPU) adds BW contention"
+  _review_flags: []
+
+pipeline:
+  nodes:
+    # ── External (off-SoC) ────────────────────────────────────────
+    - id: sensor
+      type: hw_ip
+      layer: hw
+      label: "Camera Sensor\n(ISOCELL, RAW12)"
+      external: true
+
+    - id: display
+      type: hw_ip
+      layer: hw
+      label: "Display Panel\n(FHD+ DSI)"
+      external: true
+
+    # ── App layer ─────────────────────────────────────────────────
+    - id: camera_app
+      type: sw_task
+      layer: app
+      sw_thread: app
+      label: "CameraApp\n(Camera2 client)"
+
+    # ── Framework layer ───────────────────────────────────────────
+    - id: camera2_api
+      type: sw_task
+      layer: framework
+      sw_thread: framework
+      label: "Camera2 API\n(CameraService)"
+
+    - id: mediacodec
+      type: sw_task
+      layer: framework
+      sw_thread: framework
+      label: "MediaCodec FW\n(Codec2)"
+
+    - id: surfaceflinger
+      type: sw_task
+      layer: framework
+      sw_thread: framework
+      label: "SurfaceFlinger"
+
+    # ── HAL layer ─────────────────────────────────────────────────
+    - id: camera_hal
+      type: sw_task
+      layer: hal
+      sw_thread: hal_kernel
+      label: "CameraHAL3\n(Exynos CameraHAL)"
+
+    - id: codec_hal
+      type: sw_task
+      layer: hal
+      sw_thread: hal_kernel
+      label: "Codec2 HAL\n(Exynos MFC HAL)"
+
+    # ── Kernel layer ──────────────────────────────────────────────
+    - id: v4l2_driver
+      type: sw_task
+      layer: kernel
+      sw_thread: hal_kernel
+      label: "V4L2 Driver\n(ISP M2M)"
+
+    - id: mfc_driver
+      type: sw_task
+      layer: kernel
+      sw_thread: hal_kernel
+      label: "MFC Driver\n(Exynos MFC)"
+
+    - id: drm_kms
+      type: sw_task
+      layer: kernel
+      sw_thread: hal_kernel
+      label: "DRM / KMS\n(Exynos DECON)"
+
+    - id: storage_write
+      type: sw_task
+      layer: kernel
+      sw_thread: hal_kernel
+      label: "Storage Write\n(MediaMuxer)"
+
+    # ── HW layer ──────────────────────────────────────────────────
+    - id: gpu
+      type: hw_ip
+      layer: hw
+      label: "GPU\n(Xclipse, GLES)"
+
+    - id: isp
+      type: hw_ip
+      layer: hw
+      label: "ISP_0\n(Exynos ISP M2M)"
+
+    - id: mfc
+      type: hw_ip
+      layer: hw
+      label: "MFC\n(H.265 / AV1)"
+
+    - id: dpu
+      type: hw_ip
+      layer: hw
+      label: "DPU\n(Exynos DECON)"
+
+    # ── Memory / Buffer layer ─────────────────────────────────────
+    - id: enc_buf
+      type: buffer
+      layer: memory
+      label: "Encode Buffer\nNV12 · 3840×2160"
+      compression: false
+      llc: false
+
+    - id: preview_buf
+      type: buffer
+      layer: memory
+      label: "Preview Buffer\nNV12 · 1920×1080"
+      compression: true
+      llc: true
+      rotation: true
+
+    - id: status_buf
+      type: buffer
+      layer: memory
+      label: "Status Bar\nARGB8888 · 1080×96"
+      compression: false
+      llc: true
+
+    - id: controls_buf
+      type: buffer
+      layer: memory
+      label: "Camera Controls\nARGB8888 · 1080×324"
+      compression: false
+      llc: true
+
+    - id: bitstream
+      type: buffer
+      layer: memory
+      label: "Encoded Bitstream\n(H.265 / AV1)"
+      compression: false
+      llc: false
+
+  edges:
+    # ── SW Control stack ─────────────────────────────────────────
+    - {id: e_app_cam2,   source: camera_app,   target: camera2_api,   role: control}
+    - {id: e_cam2_hal,   source: camera2_api,  target: camera_hal,    role: control}
+    - {id: e_hal_v4l2,   source: camera_hal,   target: v4l2_driver,   role: control}
+    - {id: e_v4l2_isp,   source: v4l2_driver,  target: isp,           role: control}
+    - {id: e_cam2_mc,    source: camera2_api,  target: mediacodec,    role: control}
+    - {id: e_mc_chal,    source: mediacodec,   target: codec_hal,     role: control}
+    - {id: e_chal_mfcd,  source: codec_hal,    target: mfc_driver,    role: control}
+    - {id: e_mfcd_mfc,   source: mfc_driver,   target: mfc,           role: control}
+    - {id: e_cam2_sf,    source: camera2_api,  target: surfaceflinger, role: control}
+    - {id: e_sf_drm,     source: surfaceflinger, target: drm_kms,     role: control}
+    - {id: e_drm_dpu,    source: drm_kms,      target: dpu,           role: control}
+    - {id: e_app_gpu,    source: camera_app,   target: gpu,           role: control}
+    - {id: e_sf_gpu,     source: surfaceflinger, target: gpu,         role: control}
+
+    # ── HW Data path ─────────────────────────────────────────────
+    - {id: e_sensor_isp,    source: sensor,    target: isp,
+       role: data, format: RAW12}
+
+    - {id: e_isp_enc_buf,   source: isp,       target: enc_buf,
+       role: data, format: NV12, resolution: "3840x2160", fps: 30, fan_out: true}
+
+    - {id: e_isp_preview,   source: isp,       target: preview_buf,
+       role: data, format: NV12, resolution: "1920x1080", fps: 30}
+
+    - {id: e_enc_mfc,       source: enc_buf,   target: mfc,
+       role: data, format: NV12, resolution: "3840x2160", fps: 30}
+
+    - {id: e_mfc_bits,      source: mfc,       target: bitstream,
+       role: data}
+
+    - {id: e_bits_store,    source: bitstream, target: storage_write,
+       role: data}
+
+    - {id: e_gpu_status,    source: gpu,       target: status_buf,
+       role: data, format: ARGB8888, resolution: "1080x96", fps: 30}
+
+    - {id: e_gpu_controls,  source: gpu,       target: controls_buf,
+       role: data, format: ARGB8888, resolution: "1080x324", fps: 30}
+
+    - {id: e_preview_dpu,   source: preview_buf,  target: dpu, role: data}
+    - {id: e_status_dpu,    source: status_buf,   target: dpu, role: data}
+    - {id: e_controls_dpu,  source: controls_buf, target: dpu, role: data}
+    - {id: e_dpu_display,   source: dpu,          target: display, role: data}
+
+dpu_compositions:
+  - display_id: display
+    display_name: "Main Display (FHD+)"
+    display_size: {w: 1080, h: 2340}
+    planes:
+      - name: "Camera Preview"
+        buffer: preview_buf
+        source_crop:   {x: 0, y:    0, w: 1920, h: 1080}
+        display_frame: {x: 0, y:   96, w: 1080, h: 1920}
+        transform: ROT_90
+        z_order: 0
+        plane_alpha: 1.0
+      - name: "Status Bar"
+        buffer: status_buf
+        source_crop:   {x: 0, y: 0, w: 1080, h:  96}
+        display_frame: {x: 0, y: 0, w: 1080, h:  96}
+        transform: NONE
+        z_order: 1
+        plane_alpha: 1.0
+      - name: "Camera Controls"
+        buffer: controls_buf
+        source_crop:   {x: 0, y:    0, w: 1080, h: 324}
+        display_frame: {x: 0, y: 2016, w: 1080, h: 324}
+        transform: NONE
+        z_order: 2
+        plane_alpha: 1.0
+
+variants:
+  - id: FHD30
+    name: "FHD 30fps (1920×1080)"
+    output_period_ms: 33.3
+    budget_ms: 30.0
+    buffers:
+      enc_buf:
+        label: "Encode Buffer\nNV12 · 1920×1080"
+      preview_buf:
+        label: "Preview Buffer\nNV12 · 1280×720"
+    edges:
+      e_isp_enc_buf:
+        format: NV12
+        resolution: "1920x1080"
+        fps: 30
+      e_isp_preview:
+        format: NV12
+        resolution: "1280x720"
+        fps: 30
+      e_enc_mfc:
+        format: NV12
+        resolution: "1920x1080"
+        fps: 30
+    ip_modes:
+      ISP_0: default
+      MFC: default
+
+  - id: UHD30
+    name: "UHD 30fps (3840×2160)"
+    output_period_ms: 33.3
+    budget_ms: 30.0
+    buffers:
+      enc_buf:
+        label: "Encode Buffer\nNV12 · 3840×2160"
+      preview_buf:
+        label: "Preview Buffer\nNV12 · 1920×1080"
+    edges:
+      e_isp_enc_buf:
+        format: NV12
+        resolution: "3840x2160"
+        fps: 30
+      e_isp_preview:
+        format: NV12
+        resolution: "1920x1080"
+        fps: 30
+      e_enc_mfc:
+        format: NV12
+        resolution: "3840x2160"
+        fps: 30
+    ip_modes:
+      ISP_0: UHD30
+      MFC: H265_UHD30
+
+  - id: FHD60
+    name: "FHD 60fps (1920×1080)"
+    output_period_ms: 16.7
+    budget_ms: 15.0
+    buffers:
+      enc_buf:
+        label: "Encode Buffer\nNV12 · 1920×1080"
+      preview_buf:
+        label: "Preview Buffer\nNV12 · 1280×720"
+    edges:
+      e_isp_enc_buf:
+        format: NV12
+        resolution: "1920x1080"
+        fps: 60
+      e_isp_preview:
+        format: NV12
+        resolution: "1280x720"
+        fps: 60
+      e_enc_mfc:
+        format: NV12
+        resolution: "1920x1080"
+        fps: 60
+    ip_modes:
+      ISP_0: FHD60
+      MFC: H265_FHD60
+
+  - id: UHD60
+    name: "UHD 60fps (3840×2160)"
+    output_period_ms: 16.7
+    budget_ms: 15.0
+    buffers:
+      enc_buf:
+        label: "Encode Buffer\nNV12 · 3840×2160"
+      preview_buf:
+        label: "Preview Buffer\nNV12 · 1920×1080"
+    edges:
+      e_isp_enc_buf:
+        format: NV12
+        resolution: "3840x2160"
+        fps: 60
+      e_isp_preview:
+        format: NV12
+        resolution: "1920x1080"
+        fps: 60
+      e_enc_mfc:
+        format: NV12
+        resolution: "3840x2160"
+        fps: 60
+    ip_modes:
+      ISP_0: UHD60
+      MFC: H265_UHD60
+
+  - id: 8K30
+    name: "8K 30fps (7680×4320)"
+    output_period_ms: 33.3
+    budget_ms: 28.0
+    buffers:
+      enc_buf:
+        label: "Encode Buffer\nNV12 · 7680×4320"
+      preview_buf:
+        label: "Preview Buffer\nNV12 · 3840×2160"
+    edges:
+      e_isp_enc_buf:
+        format: NV12
+        resolution: "7680x4320"
+        fps: 30
+      e_isp_preview:
+        format: NV12
+        resolution: "3840x2160"
+        fps: 30
+      e_enc_mfc:
+        format: NV12
+        resolution: "7680x4320"
+        fps: 30
+    ip_modes:
+      ISP_0: 8K30
+      MFC: H265_8K30

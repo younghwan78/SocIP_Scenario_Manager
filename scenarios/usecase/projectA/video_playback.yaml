@@ -1,0 +1,190 @@
+scenario:
+  category: video_playback
+  name: Video Playback
+  version: "1.0"
+  description: >
+    Local video playback on Samsung Galaxy (Exynos).
+    GalleryApp uses MediaCodec to decode H.265/AV1 via Exynos MFC.
+    Decoded frames are composited by SurfaceFlinger and displayed via DPU.
+  sw_thread: framework
+  output_period_ms: 33.3   # 30fps base
+  budget_ms: 30.0
+  pipeline_latency_frames: 1
+  risks:
+    - severity: low
+      description: "AV1 decode at UHD30 approaches MFC throughput limit — reduce if thermal throttled"
+    - severity: low
+      description: "8K30 requires DPU downscale engine — verify DECON scaler availability"
+  _review_flags: []
+
+pipeline:
+  nodes:
+    # ── External ──────────────────────────────────────────────────
+    - id: storage_read
+      type: hw_ip
+      layer: hw
+      label: "Storage\n(MediaExtractor)"
+      external: true
+
+    - id: display
+      type: hw_ip
+      layer: hw
+      label: "Display Panel\n(FHD+ DSI)"
+      external: true
+
+    # ── App layer ─────────────────────────────────────────────────
+    - id: gallery_app
+      type: sw_task
+      layer: app
+      sw_thread: app
+      label: "GalleryApp\n(Video Player)"
+
+    # ── Framework layer ───────────────────────────────────────────
+    - id: mediacodec
+      type: sw_task
+      layer: framework
+      sw_thread: framework
+      label: "MediaCodec FW\n(Codec2)"
+
+    - id: surfaceflinger
+      type: sw_task
+      layer: framework
+      sw_thread: framework
+      label: "SurfaceFlinger"
+
+    # ── HAL layer ─────────────────────────────────────────────────
+    - id: codec_hal
+      type: sw_task
+      layer: hal
+      sw_thread: hal_kernel
+      label: "Codec2 HAL\n(Exynos MFC HAL)"
+
+    # ── Kernel layer ──────────────────────────────────────────────
+    - id: mfc_driver
+      type: sw_task
+      layer: kernel
+      sw_thread: hal_kernel
+      label: "MFC Driver\n(Exynos MFC)"
+
+    - id: drm_kms
+      type: sw_task
+      layer: kernel
+      sw_thread: hal_kernel
+      label: "DRM / KMS\n(Exynos DECON)"
+
+    # ── HW layer ──────────────────────────────────────────────────
+    - id: mfc
+      type: hw_ip
+      layer: hw
+      label: "MFC\n(H.265 / AV1 decode)"
+
+    - id: gpu
+      type: hw_ip
+      layer: hw
+      label: "GPU\n(Xclipse, UI compose)"
+
+    - id: dpu
+      type: hw_ip
+      layer: hw
+      label: "DPU\n(Exynos DECON)"
+
+    # ── Buffer layer ──────────────────────────────────────────────
+    - id: bitstream
+      type: buffer
+      layer: memory
+      label: "Encoded Bitstream\n(H.265 / AV1)"
+      compression: false
+      llc: false
+
+    - id: decode_buf
+      type: buffer
+      layer: memory
+      label: "Decode Buffer\nNV12 · 1920×1080"
+      compression: true
+      llc: true
+
+    - id: ui_buf
+      type: buffer
+      layer: memory
+      label: "UI Buffer\nARGB8888 · 1080×2340"
+      compression: false
+      llc: true
+
+  edges:
+    # ── SW Control ────────────────────────────────────────────────
+    - {id: e_app_mc,    source: gallery_app,  target: mediacodec,   role: control}
+    - {id: e_mc_chal,   source: mediacodec,   target: codec_hal,    role: control}
+    - {id: e_chal_mfcd, source: codec_hal,    target: mfc_driver,   role: control}
+    - {id: e_mfcd_mfc,  source: mfc_driver,   target: mfc,          role: control}
+    - {id: e_app_sf,    source: gallery_app,  target: surfaceflinger, role: control}
+    - {id: e_sf_drm,    source: surfaceflinger, target: drm_kms,    role: control}
+    - {id: e_drm_dpu,   source: drm_kms,      target: dpu,          role: control}
+    - {id: e_sf_gpu,    source: surfaceflinger, target: gpu,        role: control}
+
+    # ── Data ──────────────────────────────────────────────────────
+    - {id: e_store_bits,  source: storage_read, target: bitstream,
+       role: data}
+    - {id: e_bits_mfc,    source: bitstream,    target: mfc,
+       role: data, format: H265}
+    - {id: e_mfc_decode,  source: mfc,          target: decode_buf,
+       role: data, format: NV12, resolution: "1920x1080", fps: 30}
+    - {id: e_gpu_ui,      source: gpu,          target: ui_buf,
+       role: data, format: ARGB8888, resolution: "1080x2340", fps: 30}
+    - {id: e_decode_dpu,  source: decode_buf,   target: dpu, role: data}
+    - {id: e_ui_dpu,      source: ui_buf,       target: dpu, role: data}
+    - {id: e_dpu_display, source: dpu,          target: display, role: data}
+
+variants:
+  - id: FHD30
+    name: "FHD 30fps (1920×1080)"
+    output_period_ms: 33.3
+    budget_ms: 30.0
+    buffers:
+      decode_buf:
+        label: "Decode Buffer\nNV12 · 1920×1080"
+    edges:
+      e_mfc_decode:
+        format: NV12
+        resolution: "1920x1080"
+        fps: 30
+      e_bits_mfc:
+        format: H265
+    ip_modes:
+      MFC: default
+      DPU: default
+
+  - id: UHD30
+    name: "UHD 30fps (3840×2160)"
+    output_period_ms: 33.3
+    budget_ms: 30.0
+    buffers:
+      decode_buf:
+        label: "Decode Buffer\nNV12 · 3840×2160"
+    edges:
+      e_mfc_decode:
+        format: NV12
+        resolution: "3840x2160"
+        fps: 30
+      e_bits_mfc:
+        format: H265
+    ip_modes:
+      MFC: H265_UHD30
+      DPU: UHD30
+
+  - id: 8K30
+    name: "8K 30fps (7680×4320)"
+    output_period_ms: 33.3
+    budget_ms: 28.0
+    buffers:
+      decode_buf:
+        label: "Decode Buffer\nNV12 · 7680×4320"
+    edges:
+      e_mfc_decode:
+        format: NV12
+        resolution: "7680x4320"
+        fps: 30
+      e_bits_mfc:
+        format: H265
+    ip_modes:
+      MFC: H265_8K30
+      DPU: 8K30
