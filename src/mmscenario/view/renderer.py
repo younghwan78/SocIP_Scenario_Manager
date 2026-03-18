@@ -84,7 +84,7 @@ class ViewRenderer:
         all_variants:   [{"id":..., "name":..., "html_path":...}, ...] for the nav dropdown.
         """
         layout = pipeline.compute_layout()
-        elements = build_cytoscape_elements(pipeline, layout)
+        elements = build_cytoscape_elements(pipeline, layout, scenario.dpu_compositions or None)
         scenario_dict = build_scenario_dict(scenario)
         cytoscape_bundle = self._load_cytoscape_bundle()
 

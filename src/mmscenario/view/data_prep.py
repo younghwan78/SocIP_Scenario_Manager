@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from mmscenario.dag.pipeline import ScenarioPipeline
-    from mmscenario.schema.models import ScenarioFile
+    from mmscenario.schema.models import DpuComposition, ScenarioFile
 
 # Visual style constants (single source of truth for both data_prep and templates)
 LAYER_STYLE: dict[str, dict[str, str]] = {
@@ -30,9 +30,29 @@ NODE_TYPE_SHAPE: dict[str, str] = {
 EXTERNAL_COLOR = "#7f8c8d"   # gray for SoC-external components (sensor, display, etc.)
 
 
+def _scaled_buffer_ids(dpu_compositions: list["DpuComposition"]) -> set[str]:
+    """Return buffer node IDs that have DPU scaling in any composition plane.
+
+    Scaling is detected when source_crop dimensions ≠ display_frame dimensions
+    after accounting for the plane's rotation transform (ROT_90/ROT_270 swap w/h).
+    """
+    scaled: set[str] = set()
+    for comp in dpu_compositions:
+        for plane in comp.planes:
+            sc, df = plane.source_crop, plane.display_frame
+            if plane.transform in ("ROT_90", "ROT_270"):
+                src_w, src_h = sc.h, sc.w   # rotated: swap
+            else:
+                src_w, src_h = sc.w, sc.h
+            if src_w != df.w or src_h != df.h:
+                scaled.add(plane.buffer)
+    return scaled
+
+
 def build_cytoscape_elements(
     pipeline: "ScenarioPipeline",
     layout: dict[str, dict[str, float]],
+    dpu_compositions: "list[DpuComposition] | None" = None,
 ) -> list[dict]:
     """Convert pipeline nodes/edges + pre-computed layout into Cytoscape.js elements.
 
@@ -40,6 +60,8 @@ def build_cytoscape_elements(
       [{"data": {...}, "position": {"x": ..., "y": ...}}, ...]  for nodes
       [{"data": {"id": ..., "source": ..., "target": ..., ...}}]  for edges
     """
+    scaled_ids = _scaled_buffer_ids(dpu_compositions) if dpu_compositions else set()
+
     elements: list[dict] = []
 
     for node in pipeline._data.nodes:
@@ -64,6 +86,9 @@ def build_cytoscape_elements(
             data["llc"] = node.llc
         if node.rotation is not None:
             data["rotation"] = node.rotation
+        # Auto-detected from DPU composition: DPU downscales this buffer
+        if node.id in scaled_ids:
+            data["scaling"] = True
         elements.append({"data": data, "position": pos})
 
     for edge in pipeline._data.edges:
