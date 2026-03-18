@@ -134,6 +134,27 @@ pipeline:
     - {id: e_ui_dpu,      source: ui_buf,       target: dpu, role: data}
     - {id: e_dpu_display, source: dpu,          target: display, role: data}
 
+dpu_compositions:
+  - display_id: display
+    display_name: "Main Display (FHD+)"
+    display_size: {w: 1080, h: 2340}
+    planes:
+      - name: "Video Frame"
+        buffer: decode_buf
+        source_crop:   {x: 0, y:    0, w: 1920, h: 1080}
+        display_frame: {x: 0, y:  866, w: 1080, h:  608}
+        transform: NONE
+        z_order: 0
+        plane_alpha: 1.0
+        comment: "16:9 video letterboxed on portrait display; DPU downscales. UHD/8K variants change source_crop resolution."
+      - name: "UI Overlay"
+        buffer: ui_buf
+        source_crop:   {x: 0, y:    0, w: 1080, h: 2340}
+        display_frame: {x: 0, y:    0, w: 1080, h: 2340}
+        transform: NONE
+        z_order: 1
+        plane_alpha: 1.0
+
 variants:
   - id: FHD30
     name: "FHD 30fps (1920×1080)"
