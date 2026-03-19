@@ -1,0 +1,360 @@
+scenario:
+  category: video_recording
+  name: Dual Camera NPU Recording
+  version: "1.0"
+  description: >
+    Dual-camera (main + front) recording with NPU-based scene detection.
+    ISP_0 processes main sensor (UHD), ISP_1 processes front sensor (FHD).
+    NPU runs scene classification concurrently; MFC encodes both streams.
+    Audio is captured in parallel via DSP. Designed to stress-test layout
+    with 5+ nodes per layer.
+  sw_thread: hal_kernel
+  output_period_ms: 33.3
+  budget_ms: 30.0
+  pipeline_latency_frames: 2
+  risks:
+    - severity: high
+      description: "Dual ISP + NPU simultaneous peak BW may saturate DRAM"
+    - severity: medium
+      description: "ISP_0+ISP_1 concurrent M2M paths compete for LLC bandwidth"
+    - severity: medium
+      description: "NPU inference latency (>10ms) may delay scene-adaptive ISP tuning"
+    - severity: low
+      description: "Audio DSP wakeup jitter under heavy SoC load"
+  _review_flags: []
+
+pipeline:
+  nodes:
+    # ── External ──────────────────────────────────────────────────────
+    - id: sensor_main
+      type: hw_ip
+      layer: hw
+      label: "Main Sensor\n(ISOCELL, RAW12)"
+      external: true
+
+    - id: sensor_front
+      type: hw_ip
+      layer: hw
+      label: "Front Sensor\n(ISOCELL, RAW10)"
+      external: true
+
+    - id: display
+      type: hw_ip
+      layer: hw
+      label: "Display Panel\n(FHD+ DSI)"
+      external: true
+
+    # ── App layer (2 nodes) ────────────────────────────────────────────
+    - id: camera_app
+      type: sw_task
+      layer: app
+      sw_thread: app
+      label: "CameraApp\n(Camera2 client)"
+
+    - id: gallery_app
+      type: sw_task
+      layer: app
+      sw_thread: app
+      label: "GalleryApp\n(Thumbnail consumer)"
+
+    # ── Framework layer (5 nodes) ──────────────────────────────────────
+    - id: camera2_api
+      type: sw_task
+      layer: framework
+      sw_thread: framework
+      label: "Camera2 API\n(CameraService)"
+
+    - id: mediacodec_video
+      type: sw_task
+      layer: framework
+      sw_thread: framework
+      label: "MediaCodec Video\n(Codec2)"
+
+    - id: mediacodec_audio
+      type: sw_task
+      layer: framework
+      sw_thread: framework
+      label: "MediaCodec Audio\n(Codec2)"
+
+    - id: surfaceflinger
+      type: sw_task
+      layer: framework
+      sw_thread: framework
+      label: "SurfaceFlinger"
+
+    - id: audio_flinger
+      type: sw_task
+      layer: framework
+      sw_thread: framework
+      label: "AudioFlinger\n(AAC encoder FW)"
+
+    # ── HAL layer (4 nodes) ────────────────────────────────────────────
+    - id: camera_hal
+      type: sw_task
+      layer: hal
+      sw_thread: hal_kernel
+      label: "CameraHAL3\n(Exynos CameraHAL)"
+
+    - id: codec_hal
+      type: sw_task
+      layer: hal
+      sw_thread: hal_kernel
+      label: "Codec2 HAL\n(Exynos MFC HAL)"
+
+    - id: audio_hal
+      type: sw_task
+      layer: hal
+      sw_thread: hal_kernel
+      label: "AudioHAL\n(Exynos DSP HAL)"
+
+    - id: npu_hal
+      type: sw_task
+      layer: hal
+      sw_thread: hal_kernel
+      label: "NPU HAL\n(Exynos NPU HAL)"
+
+    # ── Kernel layer (6 nodes) ─────────────────────────────────────────
+    - id: v4l2_main
+      type: sw_task
+      layer: kernel
+      sw_thread: hal_kernel
+      label: "V4L2 Driver\n(ISP_0 M2M)"
+
+    - id: v4l2_front
+      type: sw_task
+      layer: kernel
+      sw_thread: hal_kernel
+      label: "V4L2 Driver\n(ISP_1 M2M)"
+
+    - id: mfc_driver
+      type: sw_task
+      layer: kernel
+      sw_thread: hal_kernel
+      label: "MFC Driver\n(Exynos MFC)"
+
+    - id: drm_kms
+      type: sw_task
+      layer: kernel
+      sw_thread: hal_kernel
+      label: "DRM / KMS\n(Exynos DECON)"
+
+    - id: audio_driver
+      type: sw_task
+      layer: kernel
+      sw_thread: hal_kernel
+      label: "Audio Driver\n(DSP PCM)"
+
+    - id: storage_write
+      type: sw_task
+      layer: kernel
+      sw_thread: hal_kernel
+      label: "Storage Write\n(MediaMuxer)"
+
+    # ── HW layer (7 nodes) ────────────────────────────────────────────
+    - id: isp_0
+      type: hw_ip
+      layer: hw
+      label: "ISP_0\n(Main · UHD30)"
+
+    - id: isp_1
+      type: hw_ip
+      layer: hw
+      label: "ISP_1\n(Front · FHD30)"
+
+    - id: mfc
+      type: hw_ip
+      layer: hw
+      label: "MFC\n(H.265 dual-stream)"
+
+    - id: npu
+      type: hw_ip
+      layer: hw
+      label: "NPU\n(Scene detection)"
+
+    - id: gpu
+      type: hw_ip
+      layer: hw
+      label: "GPU\n(Xclipse, GLES)"
+
+    - id: dpu
+      type: hw_ip
+      layer: hw
+      label: "DPU\n(Exynos DECON)"
+
+    - id: dsp
+      type: hw_ip
+      layer: hw
+      label: "DSP\n(Audio capture)"
+
+    # ── Memory layer (9 nodes) ────────────────────────────────────────
+    - id: yuv_main
+      type: buffer
+      layer: memory
+      label: "Main YUV Buffer\nNV12 · 3840×2160"
+      compression: false
+      llc: false
+
+    - id: yuv_front
+      type: buffer
+      layer: memory
+      label: "Front YUV Buffer\nNV12 · 1920×1080"
+      compression: true
+      llc: true
+
+    - id: enc_buf_main
+      type: buffer
+      layer: memory
+      label: "Encode Buf (Main)\nNV12 · 3840×2160"
+      compression: false
+      llc: false
+
+    - id: enc_buf_front
+      type: buffer
+      layer: memory
+      label: "Encode Buf (Front)\nNV12 · 1920×1080"
+      compression: false
+      llc: false
+
+    - id: npu_feat_buf
+      type: buffer
+      layer: memory
+      label: "NPU Feature Buf\nFP16 · scene vector"
+      compression: false
+      llc: true
+
+    - id: preview_buf
+      type: buffer
+      layer: memory
+      label: "Preview Buffer\nNV12 · 1920×1080"
+      compression: true
+      llc: true
+      rotation: true
+
+    - id: bitstream_main
+      type: buffer
+      layer: memory
+      label: "Bitstream (Main)\nH.265"
+      compression: false
+      llc: false
+
+    - id: bitstream_front
+      type: buffer
+      layer: memory
+      label: "Bitstream (Front)\nH.265"
+      compression: false
+      llc: false
+
+    - id: audio_buf
+      type: buffer
+      layer: memory
+      label: "Audio PCM Buffer\n48kHz · stereo"
+      compression: false
+      llc: false
+
+  edges:
+    # ── SW Control: Camera stack (main) ──────────────────────────────
+    - {id: e_app_cam2,       source: camera_app,      target: camera2_api,     role: control}
+    - {id: e_cam2_hal,       source: camera2_api,     target: camera_hal,      role: control}
+    - {id: e_hal_v4l2m,      source: camera_hal,      target: v4l2_main,       role: control}
+    - {id: e_v4l2m_isp0,     source: v4l2_main,       target: isp_0,           role: control}
+    - {id: e_hal_v4l2f,      source: camera_hal,      target: v4l2_front,      role: control}
+    - {id: e_v4l2f_isp1,     source: v4l2_front,      target: isp_1,           role: control}
+
+    # ── SW Control: Codec stack ───────────────────────────────────────
+    - {id: e_cam2_mcv,       source: camera2_api,     target: mediacodec_video, role: control}
+    - {id: e_mcv_chal,       source: mediacodec_video, target: codec_hal,       role: control}
+    - {id: e_chal_mfcd,      source: codec_hal,       target: mfc_driver,       role: control}
+    - {id: e_mfcd_mfc,       source: mfc_driver,      target: mfc,              role: control}
+
+    # ── SW Control: Display stack ─────────────────────────────────────
+    - {id: e_cam2_sf,        source: camera2_api,     target: surfaceflinger,  role: control}
+    - {id: e_sf_drm,         source: surfaceflinger,  target: drm_kms,         role: control}
+    - {id: e_drm_dpu,        source: drm_kms,         target: dpu,             role: control}
+    - {id: e_sf_gpu,         source: surfaceflinger,  target: gpu,             role: control}
+    - {id: e_app_gpu,        source: camera_app,      target: gpu,             role: control}
+
+    # ── SW Control: NPU stack ─────────────────────────────────────────
+    - {id: e_cam2_npu_hal,   source: camera2_api,     target: npu_hal,         role: control}
+    - {id: e_npu_hal_npu,    source: npu_hal,         target: npu,             role: control}
+
+    # ── SW Control: Audio stack ───────────────────────────────────────
+    - {id: e_af_mca,         source: audio_flinger,   target: mediacodec_audio, role: control}
+    - {id: e_af_ahal,        source: audio_flinger,   target: audio_hal,        role: control}
+    - {id: e_ahal_adrvr,     source: audio_hal,       target: audio_driver,     role: control}
+    - {id: e_adrvr_dsp,      source: audio_driver,    target: dsp,              role: control}
+
+    # ── SW Control: Gallery thumbnail ─────────────────────────────────
+    - {id: e_gapp_sf,        source: gallery_app,     target: surfaceflinger,  role: control}
+
+    # ── HW Data: Main sensor → ISP_0 → buffers ───────────────────────
+    - {id: e_sensor_main_isp0, source: sensor_main, target: isp_0,
+       role: data, format: RAW12}
+
+    - {id: e_isp0_yuv_main,  source: isp_0,    target: yuv_main,
+       role: data, format: NV12, resolution: "3840x2160", fps: 30, fan_out: true}
+
+    - {id: e_yuv_main_enc,   source: yuv_main, target: enc_buf_main,
+       role: data, format: NV12, resolution: "3840x2160", fps: 30}
+
+    - {id: e_yuv_main_npu,   source: yuv_main, target: npu_feat_buf,
+       role: data, format: NV12, resolution: "3840x2160", fps: 5}
+
+    - {id: e_isp0_preview,   source: isp_0,    target: preview_buf,
+       role: data, format: NV12, resolution: "1920x1080", fps: 30}
+
+    # ── HW Data: Front sensor → ISP_1 → buffers ──────────────────────
+    - {id: e_sensor_front_isp1, source: sensor_front, target: isp_1,
+       role: data, format: RAW10}
+
+    - {id: e_isp1_yuv_front, source: isp_1,     target: yuv_front,
+       role: data, format: NV12, resolution: "1920x1080", fps: 30}
+
+    - {id: e_yuv_front_enc,  source: yuv_front, target: enc_buf_front,
+       role: data, format: NV12, resolution: "1920x1080", fps: 30}
+
+    # ── HW Data: MFC encode → bitstreams → storage ───────────────────
+    - {id: e_enc_main_mfc,   source: enc_buf_main,  target: mfc,
+       role: data, format: NV12, resolution: "3840x2160", fps: 30}
+
+    - {id: e_enc_front_mfc,  source: enc_buf_front, target: mfc,
+       role: data, format: NV12, resolution: "1920x1080", fps: 30}
+
+    - {id: e_mfc_bits_main,  source: mfc, target: bitstream_main,  role: data}
+    - {id: e_mfc_bits_front, source: mfc, target: bitstream_front, role: data}
+
+    - {id: e_bits_main_store,  source: bitstream_main,  target: storage_write, role: data}
+    - {id: e_bits_front_store, source: bitstream_front, target: storage_write, role: data}
+
+    # ── HW Data: NPU feature → (feedback to ISP, stored) ─────────────
+    - {id: e_npu_feat_npu,   source: npu_feat_buf, target: npu,  role: data}
+
+    # ── HW Data: Audio ────────────────────────────────────────────────
+    - {id: e_dsp_audio_buf,  source: dsp,       target: audio_buf,    role: data}
+    - {id: e_audio_store,    source: audio_buf, target: storage_write, role: data}
+
+    # ── HW Data: Display composition ─────────────────────────────────
+    - {id: e_preview_dpu,    source: preview_buf, target: dpu,     role: data}
+    - {id: e_dpu_display,    source: dpu,         target: display, role: data}
+
+dpu_compositions:
+  - display_id: display
+    display_name: "Main Display (FHD+)"
+    display_size: {w: 1080, h: 2340}
+    planes:
+      - name: "Camera Preview"
+        buffer: preview_buf
+        source_crop:   {x: 0, y:    0, w: 1920, h: 1080}
+        display_frame: {x: 0, y:  200, w: 1080, h: 1440}
+        transform: ROT_90
+        z_order: 0
+        plane_alpha: 1.0
+
+variants:
+  - id: UHD30_dual
+    name: "UHD30 Main + FHD30 Front"
+    output_period_ms: 33.3
+    budget_ms: 30.0
+    ip_modes:
+      ISP_0: UHD30
+      ISP_1: FHD30
+      MFC: H265_dual

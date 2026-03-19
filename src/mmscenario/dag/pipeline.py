@@ -3,10 +3,24 @@
 Layout axes (Perfetto timeline philosophy):
   x-axis = relative time  (topological order, left → right)
   y-axis = layer          (SW top / HW middle / Memory/Buffer bottom)
+
+Grid layout policy
+------------------
+Within a (topological-level, layer) column, nodes are placed in a
+column-first grid when count > MAX_GRID_ROWS.  This bounds the vertical
+span of any layer to at most (MAX_GRID_ROWS - 1) * Y_STEP regardless of
+how many nodes share the same level, preventing layer overflow.
+
+Dynamic layer spacing
+---------------------
+LAYER_Y centres are computed at render time from the actual row counts so
+layers are packed as tightly as possible while never overlapping.
 """
 
 from __future__ import annotations
 
+import math
+from collections import defaultdict
 from typing import TYPE_CHECKING
 
 import networkx as nx
@@ -14,23 +28,95 @@ import networkx as nx
 if TYPE_CHECKING:
     from mmscenario.schema.models import L1Pipeline
 
-# Y-axis position per layer (SW sublayers top → HW → Memory bottom)
-LAYER_Y: dict[str, float] = {
-    "app":       0.0,
-    "framework": 160.0,
-    "hal":       320.0,
-    "kernel":    480.0,
-    "hw":        680.0,   # extra gap to visually separate SW stack from HW
-    "memory":    980.0,   # pushed down for HW↔buffer clearance
-}
+# ── Layer stacking order ───────────────────────────────────────────────────
+LAYER_ORDER: list[str] = ["app", "framework", "hal", "kernel", "hw", "memory"]
 
-X_STEP = 200.0   # horizontal gap between topological levels
-Y_STEP = 80.0    # vertical gap between nodes in the same layer
+# Layers after which a larger visual gap is inserted (SW→HW, HW→Memory)
+_MAJOR_GAP_AFTER: frozenset[str] = frozenset({"kernel", "hw"})
 
-# Post-processing constants
-Y_MEM_STEP = 60.0   # y spacing between sorted memory (buffer) nodes
-Y_HW_ALT   = 40.0   # alternation offset for HW nodes (±)
+# ── Layout constants ───────────────────────────────────────────────────────
+X_STEP: float = 200.0      # horizontal gap between topological levels
+X_GRID_STEP: float = 90.0  # x gap between sub-columns within one grid cell
+Y_STEP: float = 80.0       # vertical gap between rows within a layer
 
+MAX_GRID_ROWS: int = 3     # rows before expanding to multi-column grid
+
+# When a column group has multiple sub-columns, odd-numbered sub-columns are
+# shifted down by Y_COL_STAGGER so horizontally-adjacent nodes never share the
+# same y.  This separates arrow paths that would otherwise overlap on the
+# same horizontal line.  Value ≈ half node height (node height = 40 px).
+Y_COL_STAGGER: float = 20.0
+
+LAYER_GAP_SW: float = 80.0     # centre-to-centre addition between SW sublayers
+LAYER_GAP_MAJOR: float = 130.0 # addition at SW→HW and HW→Memory boundaries
+
+
+# ── Grid helpers ───────────────────────────────────────────────────────────
+
+def _grid_dims(n: int) -> tuple[int, int]:
+    """Return *(n_cols, n_rows)* for a grid holding *n* nodes.
+
+    Columns are added only when rows would exceed MAX_GRID_ROWS, so the
+    vertical extent of any column is always ≤ (MAX_GRID_ROWS - 1) * Y_STEP.
+
+    Examples (MAX_GRID_ROWS=3):
+        n=1 → (1, 1)   n=2 → (1, 2)   n=3 → (1, 3)
+        n=4 → (2, 2)   n=5 → (2, 3)   n=6 → (2, 3)
+        n=7 → (3, 3)   n=9 → (3, 3)
+    """
+    if n <= MAX_GRID_ROWS:
+        return 1, n
+    n_cols = math.ceil(n / MAX_GRID_ROWS)
+    n_rows = math.ceil(n / n_cols)
+    return n_cols, n_rows
+
+
+def _layer_half_height(max_rows: int) -> float:
+    """Vertical half-span (px) of a layer band with *max_rows* rows."""
+    return (max_rows - 1) / 2.0 * Y_STEP
+
+
+# ── Dynamic LAYER_Y computation ────────────────────────────────────────────
+
+def _compute_layer_y(
+    groups: dict[tuple[int, str], list[str]],
+) -> dict[str, float]:
+    """Return per-layer Y centre positions derived from actual node counts.
+
+    Algorithm
+    ---------
+    1. For every (level, layer) group compute grid row count.
+    2. Per layer: take the maximum row count across all levels → band height.
+    3. Stack layers top-to-bottom using LAYER_GAP_SW / LAYER_GAP_MAJOR between
+       adjacent band centres, ensuring no two bands overlap.
+    """
+    # ── max rows per layer ────────────────────────────────────────────────
+    layer_max_rows: dict[str, int] = {L: 1 for L in LAYER_ORDER}
+    for (_, layer), nodes in groups.items():
+        if layer in layer_max_rows:
+            _, rows = _grid_dims(len(nodes))
+            layer_max_rows[layer] = max(layer_max_rows[layer], rows)
+
+    # ── stack layers from y = 0 downward ─────────────────────────────────
+    layer_y: dict[str, float] = {}
+    prev: str | None = None
+    for layer in LAYER_ORDER:
+        if prev is None:
+            layer_y[layer] = 0.0
+        else:
+            gap = LAYER_GAP_MAJOR if prev in _MAJOR_GAP_AFTER else LAYER_GAP_SW
+            layer_y[layer] = (
+                layer_y[prev]
+                + _layer_half_height(layer_max_rows[prev])
+                + gap
+                + _layer_half_height(layer_max_rows[layer])
+            )
+        prev = layer
+
+    return layer_y
+
+
+# ── Main pipeline class ────────────────────────────────────────────────────
 
 class ScenarioPipeline:
     """networkx-backed DAG for an L1 pipeline."""
@@ -38,6 +124,16 @@ class ScenarioPipeline:
     def __init__(self, pipeline_data: "L1Pipeline") -> None:
         self._data = pipeline_data
         self._graph = self._build_graph()
+        self._layer_y: dict[str, float] = {L: float(i * 160) for i, L in enumerate(LAYER_ORDER)}
+
+    @property
+    def layer_y(self) -> dict[str, float]:
+        """Per-layer Y centres last computed by compute_layout().
+
+        Populated after the first call to compute_layout(); returns a
+        reasonable static fallback before that.
+        """
+        return self._layer_y
 
     # ------------------------------------------------------------------
     # Graph construction
@@ -62,8 +158,7 @@ class ScenarioPipeline:
     def detect_cycles(self) -> list[list[str]]:
         """Return list of cycles (each cycle is a list of node ids)."""
         try:
-            cycles = list(nx.simple_cycles(self._graph))
-            return cycles
+            return list(nx.simple_cycles(self._graph))
         except Exception:
             return []
 
@@ -99,7 +194,7 @@ class ScenarioPipeline:
 
     def nodes_by_layer(self) -> dict[str, list[str]]:
         """Group node ids by their layer attribute."""
-        result: dict[str, list[str]] = {k: [] for k in LAYER_Y}
+        result: dict[str, list[str]] = {k: [] for k in LAYER_ORDER}
         for node_id, attrs in self._graph.nodes(data=True):
             layer = attrs.get("layer", "hw")
             result.setdefault(layer, []).append(node_id)
@@ -113,17 +208,14 @@ class ScenarioPipeline:
         """Compute (x, y) positions for Cytoscape.js preset layout.
 
         x-axis: topological generation (relative time, left → right)
-        y-axis: layer  (app=0 … kernel=480 … hw=680 … memory=980)
+        y-axis: layer  (app top … memory bottom)
 
-        Within the same (x, layer) column, nodes are spread vertically by
-        Y_STEP to avoid overlap.
+        Within a (level, layer) group nodes are placed in a grid:
+        - up to MAX_GRID_ROWS nodes → single column, spread vertically
+        - more nodes → additional sub-columns spaced X_GRID_STEP apart
 
-        Post-processing:
-        - memory layer: nodes sorted by x get unique, evenly-spaced y values
-          (Y_MEM_STEP apart) so taxi-routed edges never share the same y as
-          intermediate buffer nodes → eliminates the main crossing artifact.
-        - hw layer: nodes sorted by x get alternating ±Y_HW_ALT offsets to
-          break the "all IPs on the same horizontal line" pattern.
+        Layer Y centres are computed dynamically so no layer ever overflows
+        into an adjacent band regardless of node count.
         """
         if self.detect_cycles():
             return self._fallback_layout()
@@ -134,51 +226,57 @@ class ScenarioPipeline:
             for node_id in nodes:
                 generations[node_id] = level
 
-        # ── Step 2: group by (level, layer); spread multi-node columns ─
-        from collections import defaultdict
+        # ── Step 2: group by (level, layer) ───────────────────────────
         groups: dict[tuple[int, str], list[str]] = defaultdict(list)
         for node_id, attrs in self._graph.nodes(data=True):
             layer = attrs.get("layer", "hw")
             lvl = generations.get(node_id, 0)
             groups[(lvl, layer)].append(node_id)
 
+        # ── Step 3: dynamic layer Y centres ───────────────────────────
+        layer_y = _compute_layer_y(groups)
+        self._layer_y = layer_y  # cache for callers (e.g. renderer)
+
+        # ── Step 4: place nodes in grid cells ─────────────────────────
+        # Grid fills column-first (top of left column → bottom of left column
+        # → top of next column …) which reads naturally left-to-right.
         layout: dict[str, dict[str, float]] = {}
-        layer_nodes_map: dict[str, list[str]] = defaultdict(list)
+        layer_nodes_all: dict[str, list[str]] = defaultdict(list)
         for (lvl, layer), node_ids in groups.items():
             base_x = lvl * X_STEP
-            base_y = LAYER_Y.get(layer, 300.0)
-            n = len(node_ids)
+            base_y = layer_y.get(layer, 0.0)
+            n_cols, n_rows = _grid_dims(len(node_ids))
+
             for i, node_id in enumerate(node_ids):
-                offset = (i - (n - 1) / 2) * Y_STEP
-                layout[node_id] = {"x": base_x, "y": base_y + offset}
-            layer_nodes_map[layer].extend(node_ids)
+                col = i // n_rows
+                row = i % n_rows
+                x = base_x + (col - (n_cols - 1) / 2.0) * X_GRID_STEP
+                # Odd sub-columns are shifted down by Y_COL_STAGGER so nodes
+                # that share the same grid row never sit on the same y-line,
+                # keeping arrow paths visually separated.
+                stagger = (col % 2) * Y_COL_STAGGER if n_cols > 1 else 0.0
+                y = base_y + (row - (n_rows - 1) / 2.0) * Y_STEP + stagger
+                layout[node_id] = {"x": x, "y": y}
+            layer_nodes_all[layer].extend(node_ids)
 
-        # ── Step 3: post-process memory layer ─────────────────────────
-        # Sort all buffer nodes by (x, current_y) and assign unique y
-        # values centred on LAYER_Y["memory"].  With each buffer at a
-        # distinct y, horizontal taxi segments can no longer share a y
-        # level with another buffer node → the key crossing artifact gone.
-        mem_nodes = layer_nodes_map.get("memory", [])
-        if mem_nodes:
-            sorted_mem = sorted(mem_nodes,
-                                key=lambda n: (layout[n]["x"], layout[n]["y"]))
-            n = len(sorted_mem)
-            base_y = LAYER_Y["memory"]
-            for i, node_id in enumerate(sorted_mem):
-                layout[node_id]["y"] = base_y + (i - (n - 1) / 2) * Y_MEM_STEP
-
-        # ── Step 4: post-process hw layer ─────────────────────────────
-        # When all HW IPs land on even topological generations they all
-        # get the same y.  Alternating ±Y_HW_ALT by sorted-x position
-        # staggers them visually without violating layer boundaries.
-        hw_nodes = layer_nodes_map.get("hw", [])
-        if hw_nodes:
-            sorted_hw = sorted(hw_nodes,
-                               key=lambda n: (layout[n]["x"], layout[n]["y"]))
-            base_y = LAYER_Y["hw"]
-            for i, node_id in enumerate(sorted_hw):
-                alt = Y_HW_ALT * (1 if i % 2 else -1)
-                layout[node_id]["y"] = base_y + alt
+        # ── Step 5: stagger same-y nodes across different x positions ─
+        # Nodes that belong to single-node columns in the same layer all
+        # land on the exact same y (layer centre).  Arrows between such nodes
+        # overlap on one horizontal line.  Sort each y-group by x and apply
+        # an alternating +Y_COL_STAGGER offset so consecutive nodes are never
+        # on the same horizontal line.
+        for layer, nids in layer_nodes_all.items():
+            # Group nodes by their current rounded y value
+            by_y: dict[int, list[str]] = defaultdict(list)
+            for nid in nids:
+                by_y[round(layout[nid]["y"])].append(nid)
+            for same_y_nodes in by_y.values():
+                if len(same_y_nodes) < 2:
+                    continue
+                # Sort by x so the stagger alternates left-to-right
+                same_y_nodes.sort(key=lambda n: layout[n]["x"])
+                for i, nid in enumerate(same_y_nodes):
+                    layout[nid]["y"] += (i % 2) * Y_COL_STAGGER
 
         return layout
 

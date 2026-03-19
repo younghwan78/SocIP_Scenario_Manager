@@ -195,19 +195,32 @@
 // ── Data from Python ──────────────────────────────────────────────
 var ELEMENTS   = {{ elements | tojson }};
 var SCENARIO   = {{ scenario | tojson }};
-var LAYER_Y    = { app: 0, framework: 160, hal: 320, kernel: 480, hw: 680, memory: 980 };
+var LAYER_Y    = {{ layer_y | tojson }};  // dynamic: computed from actual node counts
 var MODE       = "executive";
 
-// ── Layer background band definitions (module scope — static, never changes) ──
-// y1/y2 are model-space midpoints between adjacent LAYER_Y values.
-var LAYER_BANDS = [
-  { y1: -60,  y2:  80,  color: 'rgba(142,68,173,0.07)'  },  // app
-  { y1:  80,  y2: 240,  color: 'rgba(41,128,185,0.07)'  },  // framework
-  { y1: 240,  y2: 400,  color: 'rgba(22,160,133,0.07)'  },  // hal
-  { y1: 400,  y2: 580,  color: 'rgba(44,62,80,0.06)'    },  // kernel
-  { y1: 580,  y2: 830,  color: 'rgba(230,126,34,0.07)'  },  // hw
-  { y1: 830,  y2: 1300, color: 'rgba(39,174,96,0.07)'   },  // memory
-];
+// ── Layer background band definitions — derived from LAYER_Y ─────
+// y1/y2 are model-space midpoints between adjacent layer centres.
+var _LAYER_ORDER  = ['app', 'framework', 'hal', 'kernel', 'hw', 'memory'];
+var _LAYER_COLORS = {
+  app:       'rgba(142,68,173,0.07)',
+  framework: 'rgba(41,128,185,0.07)',
+  hal:       'rgba(22,160,133,0.07)',
+  kernel:    'rgba(44,62,80,0.06)',
+  hw:        'rgba(230,126,34,0.07)',
+  memory:    'rgba(39,174,96,0.07)',
+};
+var LAYER_BANDS = (function() {
+  var present = _LAYER_ORDER.filter(function(l) { return LAYER_Y[l] !== undefined; });
+  return present.map(function(layer, i) {
+    var y1 = i === 0
+      ? LAYER_Y[layer] - 70
+      : (LAYER_Y[present[i-1]] + LAYER_Y[layer]) / 2;
+    var y2 = i === present.length - 1
+      ? LAYER_Y[layer] + 300
+      : (LAYER_Y[layer] + LAYER_Y[present[i+1]]) / 2;
+    return { y1: y1, y2: y2, color: _LAYER_COLORS[layer] };
+  });
+})();
 
 // ── Active variant ip_modes (ip_id → mode_id) ────────────────────
 var ACTIVE_IP_MODES = {{ (active_variant.ip_modes if active_variant else {}) | tojson }};
